@@ -38,8 +38,9 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.chessvisualization.chess_visualization_app"
+        applicationId = "com.misaelbroertjes.chessvisualizer"
         minSdk = flutter.minSdkVersion
+
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
