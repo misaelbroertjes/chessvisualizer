@@ -61,11 +61,11 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
   void _loadLevelAndGenerate() async {
     final stats = await _storageService.loadUserStats();
     _level = stats.pathfinderLevel;
-    _generateLayout(consume: true);
+    _generateLayout(consume: false);
   }
 
   void _skipOrGiveUpPuzzle() {
-    _generateLayout(consume: true);
+    _generateLayout(consume: false);
   }
 
   void _restartCurrentRoute() {
@@ -89,7 +89,7 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
     );
   }
 
-  void _generateLayout({bool consume = true}) async {
+  void _generateLayout({bool consume = false}) async {
     if (consume) {
       final hasEnergy = await _storageService.consumeEnergy();
       if (!hasEnergy) {
@@ -123,6 +123,7 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
       _knightSquare = allSquares[startIdx];
       _targetSquare = allSquares[targetIdx];
       _movesCount = 0;
+      _dangerHintCount = 0;
       _isCompleted = false;
       _isFailed = false;
       _errorSquares.clear();
@@ -309,6 +310,11 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
 
     if (_controlledSquares.contains(to)) {
       _audioService.playError();
+      _storageService.consumeEnergy().then((hasEnergy) {
+        if (!hasEnergy && mounted) {
+          EnergyDialog.show(context, onRefilled: () {});
+        }
+      });
       final attackers = _squareAttackers[to] ?? {};
       final solution = _findShortestPath() ?? [];
 
@@ -319,9 +325,6 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
       });
       return;
     }
-
-
-
 
     // Capture piece if landing on enemy
     bool captured = false;
@@ -348,15 +351,36 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
       _showDanger = false;
     }
 
-    // Win condition
+    // Win condition check
     if (_knightSquare == _targetSquare) {
-      _audioService.playSuccess();
-      setState(() {
-        _isCompleted = true;
-        _level++;
-      });
-      _storageService.savePathfinderLevel(_level);
-      _storageService.recordActivity(true);
+      int extraMoves = _movesCount - _minMoves;
+      int totalPenalty = (extraMoves > 0 ? extraMoves : 0) + _dangerHintCount;
+      int stars = 3 - totalPenalty;
+
+      if (stars <= 0) {
+        // Route failed because player took too many extra moves or hints!
+        _audioService.playError();
+        _storageService.consumeEnergy().then((hasEnergy) {
+          if (!hasEnergy && mounted) {
+            EnergyDialog.show(context, onRefilled: () {});
+          }
+        });
+
+        final solution = _findShortestPath() ?? [];
+        setState(() {
+          _isFailed = true;
+          _greenHighlights = solution.toSet();
+        });
+      } else {
+        // Route passed with 1..3 stars!
+        _audioService.playSuccess();
+        setState(() {
+          _isCompleted = true;
+          _level++;
+        });
+        _storageService.savePathfinderLevel(_level);
+        _storageService.recordActivity(true);
+      }
     }
   }
 
@@ -393,18 +417,22 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
     int extraMoves = _movesCount - _minMoves;
     int totalPenalty = (extraMoves > 0 ? extraMoves : 0) + _dangerHintCount;
 
-    int stars = 1;
+    int stars = max(0, 3 - totalPenalty);
     String starRatingTitle = '⭐ 1 Star Route';
     String starSubtitle = 'Used $_movesCount moves ($extraMoves extra moves, $_dangerHintCount danger hints used).';
 
-    if (totalPenalty == 0) {
-      stars = 3;
+    if (stars == 3) {
       starRatingTitle = '⭐⭐⭐ Perfect Route!';
       starSubtitle = 'Optimal solution found in $_movesCount moves with 0 danger hints!';
-    } else if (totalPenalty == 1) {
-      stars = 2;
+    } else if (stars == 2) {
       starRatingTitle = '⭐⭐ Great Route!';
       starSubtitle = 'Used $_movesCount moves (${extraMoves > 0 ? '$extraMoves extra move' : ''}${_dangerHintCount > 0 ? '1 danger hint (-1⭐)' : ''}).';
+    } else if (stars == 1) {
+      starRatingTitle = '⭐ Passable Route';
+      starSubtitle = 'Used $_movesCount moves ($extraMoves extra moves, $_dangerHintCount hints).';
+    } else {
+      starRatingTitle = '❌ Route Inefficient!';
+      starSubtitle = 'Too many extra moves or hints used ($extraMoves extra moves, $_dangerHintCount hints).';
     }
 
     return Scaffold(
