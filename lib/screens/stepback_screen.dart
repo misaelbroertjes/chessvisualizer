@@ -50,6 +50,19 @@ class _StepbackScreenState extends State<StepbackScreen> {
   void initState() {
     super.initState();
     _loadNewPuzzle();
+    _checkFirstTimeInfo();
+  }
+
+  void _checkFirstTimeInfo() async {
+    final seen = await _storageService.hasSeenModeInfo('stepback');
+    if (!seen && mounted) {
+      await _storageService.setSeenModeInfo('stepback');
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ModeInfoDialog.showStepbackInfo(context);
+        }
+      });
+    }
   }
 
   @override

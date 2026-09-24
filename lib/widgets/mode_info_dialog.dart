@@ -27,11 +27,11 @@ class ModeInfoDialog extends StatelessWidget {
           'Find as many board coordinates as possible in 60 seconds.',
         ],
         rules: [
-          '⚡ Costs 1 Energy per 60-second session.',
+          '⚡ Costs 1 Energy per 60-second speed training session.',
           'Tap the square on the board that matches the target coordinate prompt.',
           'Penalty Mode: Removes 1 second for every incorrect tap.',
           'Sudden Death: Ends session immediately on a single mistake.',
-          'Random Orientation: Automatically flips between White and Black views.',
+          'Board View: Practice with White, Black, or Random orientation.',
         ],
         tips: [
           'Anchor your vision: Remember corner squares (a1, a8, h1, h8) and central squares (d4, d5, e4, e5).',
@@ -52,16 +52,15 @@ class ModeInfoDialog extends StatelessWidget {
           'Guide your knight safely to the target square in minimum moves.',
         ],
         rules: [
-          'Level 1 & 2: 0 enemy pieces (clean practice board).',
-          'Level 3 & 4: 1 enemy piece; Level 5 & 6: 2 enemy pieces (adds +1 enemy piece every 2 levels up to max 8).',
-          '💥 Mistake (-1⚡): Jumping to an attacked or defended square resets Level to 1 (-1⚡) and loads a new layout.',
-          '🔄 Reset Route (0⚡): Restart the exact SAME level for free to retry optimal routes.',
-          '⏩ Skip (-1⚡): Give up layout and generate a new puzzle (-1⚡).',
-          '⭐⭐⭐ Star Rating: 3 stars for minimum route, 2 stars for +1 step, 1 star for +2 or more steps.',
+          '⚡ Energy Rule: Level generation, route navigation, hints, and restarts are 100% FREE.',
+          '💥 Mistake (-1⚡): Landing on a square controlled by an enemy threat ray costs 1 Energy.',
+          '❌ Inefficient Route (-1⚡): Taking 3+ extra moves or hints fails the route and costs 1 Energy.',
+          '⭐⭐⭐ Star Rating: 3 stars for optimal route, 2 stars for +1 extra move/hint (-1⭐), 1 star for +2 extra moves/hints (-2⭐).',
+          'Level Progression: Enemy pieces increase by +1 piece every 2 levels up to max 8.',
         ],
         tips: [
           'Use the 🛡️ "Show Danger" button if you need to visualize threat rays.',
-          'Enable "Allow Piece Captures" to capture undefended enemy pieces in your way.',
+          'Use "Reset Route" to retry the same layout for free to find the optimal path!',
         ],
       ),
     );
@@ -78,8 +77,9 @@ class ModeInfoDialog extends StatelessWidget {
           'Enhance calculation depth and mental vision.',
         ],
         rules: [
-          '⚡ Costs 1 Energy per puzzle.',
-          'Visualization Depth: Choose 1, 2, 3, 4, or 5 moves to play in your head before solving on the board.',
+          '⚡ Energy Rule: Calculating moves in your head, switching depth, loading puzzles, and solving correctly costs 0 Energy (FREE!).',
+          '❌ Wrong Move (-1⚡): Making an incorrect move attempt on the board costs 1 Energy.',
+          'Visualization Depth: Choose 1, 2, 3, 4, or 5 moves to calculate in your head before executing the winning move.',
           'Forcing Tactics: Puzzles are filtered for high quality (Rating 1300+).',
           '👁️ Eye Icon (Visual Aid): Toggle ghost dots on pieces moving in the mental sequence.',
           '⏪ Replay Bar: Inspect full step-by-step solutions after completing a puzzle.',
@@ -102,18 +102,17 @@ class ModeInfoDialog extends StatelessWidget {
           'Track your training attempts and keep your focus sharp.',
         ],
         rules: [
-          '⚡ Max Capacity: You have 10 Attempts max (10/10).',
-          '⏳ Hourly Refill: Energy refills back to 10/10 automatically every 60 minutes.',
+          '⚡ Max Capacity: You have 10 Energy (10/10).',
+          '⏳ Automatic Refill: Energy refills back to 10/10 automatically every 60 minutes.',
           '📺 Instant Refill (+10⚡): At 0 energy, watch a short video ad to instantly top up to 10/10!',
-          '🎮 1⚡ per training session (Coordinates run, Pathfinder level, or Puzzle Stepback).',
+          '🎮 Energy usage: Costs 1⚡ ONLY when making a mistake in Stepback/Pathfinder, failing a route, or starting a 60s Coordinates session.',
         ],
         tips: [
-          'Use "Reset Route (0⚡)" in Pathfinder to retry the same puzzle for free without spending energy!',
+          'Navigating, calculating, and solving puzzles correctly costs 0 energy!',
         ],
       ),
     );
   }
-
 
   @override
   Widget build(BuildContext context) {

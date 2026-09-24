@@ -50,6 +50,19 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
   void initState() {
     super.initState();
     _loadLevelAndGenerate();
+    _checkFirstTimeInfo();
+  }
+
+  void _checkFirstTimeInfo() async {
+    final seen = await _storageService.hasSeenModeInfo('pathfinder');
+    if (!seen && mounted) {
+      await _storageService.setSeenModeInfo('pathfinder');
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ModeInfoDialog.showPathfinderInfo(context);
+        }
+      });
+    }
   }
 
   @override

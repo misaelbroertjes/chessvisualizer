@@ -178,4 +178,14 @@ class StorageService {
     final now = DateTime.now();
     return "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
   }
+
+  Future<bool> hasSeenModeInfo(String modeKey) async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool('seen_info_$modeKey') ?? false;
+  }
+
+  Future<void> setSeenModeInfo(String modeKey) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('seen_info_$modeKey', true);
+  }
 }

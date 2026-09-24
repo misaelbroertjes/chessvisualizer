@@ -43,6 +43,19 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
   void initState() {
     super.initState();
     _loadHighScore();
+    _checkFirstTimeInfo();
+  }
+
+  void _checkFirstTimeInfo() async {
+    final seen = await _storageService.hasSeenModeInfo('coordinates');
+    if (!seen && mounted) {
+      await _storageService.setSeenModeInfo('coordinates');
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ModeInfoDialog.showCoordinatesInfo(context);
+        }
+      });
+    }
   }
 
   @override
