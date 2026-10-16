@@ -28,15 +28,19 @@ class _StepbackScreenState extends State<StepbackScreen> {
   Puzzle? _currentPuzzle;
   int _visualizationDepth = 1; // 1, 2, 3, 4, or 5 moves in head
   bool _visualAid = false;
-  String _gameState = 'solving'; // 'solving', 'feedback'
+  String _gameState = 'solving'; // 'solving', 'opponent_moving', 'feedback'
 
   Map<String, String> _boardPosition = {};
+  Map<String, String> _stepbackStartPosition = {};
   late chess_lib.Chess _activeGame;
   String _playerColor = 'white';
   List<String> _solutionMoves = [];
   int _stepIndex = 1;
   final List<Map<String, String>> _movesTable = [];
-  
+  final List<Map<String, dynamic>> _setupReplaySteps = [];
+  String? _originSquareOfFirstMove;
+  bool _recordedMistakeForCurrentPuzzle = false;
+
   Set<String> _selectedSquares = {};
   Set<String> _greenHighlights = {};
   Set<String> _errorSquares = {};
@@ -71,7 +75,10 @@ class _StepbackScreenState extends State<StepbackScreen> {
     super.dispose();
   }
 
-  void _loadNewPuzzle() {
+  Future<void> _loadNewPuzzle() async {
+    final stats = await _storageService.loadUserStats();
+    if (!mounted) return;
+
     setState(() {
       _gameState = 'solving';
       _selectedSquares.clear();
@@ -79,12 +86,19 @@ class _StepbackScreenState extends State<StepbackScreen> {
       _errorSquares.clear();
       _pieceMarkers.clear();
       _historyStates.clear();
+      _setupReplaySteps.clear();
       _historyIndex = 0;
+      _originSquareOfFirstMove = null;
+      _recordedMistakeForCurrentPuzzle = false;
     });
+
+    final minRating = (stats.eloRating - 350).clamp(800, 2200);
+    final maxRating = (stats.eloRating + 450).clamp(1300, 2800);
 
     final puzzle = _puzzleService.getRandomPuzzle(
       forcingOnly: true,
-      minRating: 1300,
+      minRating: minRating,
+      maxRating: maxRating,
       minPreMoves: _visualizationDepth - 1,
     );
 
@@ -96,7 +110,7 @@ class _StepbackScreenState extends State<StepbackScreen> {
 
     // Determine player color from FEN
     final fenParts = puzzle.fen.split(' ');
-    final blunderColor = fenParts[1];
+    final blunderColor = fenParts.length > 1 ? fenParts[1] : 'w';
     _playerColor = blunderColor == 'w' ? 'black' : 'white';
 
     _setupStepbackPosition();
@@ -111,6 +125,7 @@ class _StepbackScreenState extends State<StepbackScreen> {
 
     final from = moveStr.substring(0, 2);
     final to = moveStr.substring(2, 4);
+    final promo = moveStr.length >= 5 ? '=${moveStr.substring(4, 5).toUpperCase()}' : '';
 
     final piece = game.get(from);
     if (piece == null) return moveStr;
@@ -123,24 +138,32 @@ class _StepbackScreenState extends State<StepbackScreen> {
       if ((from == 'e1' && to == 'c1') || (from == 'e8' && to == 'c8')) return 'O-O-O';
     }
 
-    final isCapture = game.get(to) != null;
+    final isEnPassant = type == 'P' && from[0] != to[0] && game.get(to) == null;
+    final isCapture = game.get(to) != null || isEnPassant;
     final captureChar = isCapture ? 'x' : '';
 
     if (type == 'P') {
       if (isCapture) {
-        return '${from[0]}x$to';
+        return '${from[0]}x$to$promo';
       }
-      return to;
+      return '$to$promo';
     }
 
-    return '$type$captureChar$to';
+    return '$type$captureChar$to$promo';
   }
 
   bool _makeMove(chess_lib.Chess game, String moveStr) {
     if (moveStr.isEmpty) return false;
     try {
       if (moveStr.length >= 4 && RegExp(r'^[a-h][1-8][a-h][1-8]').hasMatch(moveStr)) {
-        return game.move({'from': moveStr.substring(0, 2), 'to': moveStr.substring(2, 4)});
+        final moveMap = <String, String>{
+          'from': moveStr.substring(0, 2),
+          'to': moveStr.substring(2, 4),
+        };
+        if (moveStr.length >= 5) {
+          moveMap['promotion'] = moveStr.substring(4, 5).toLowerCase();
+        }
+        return game.move(moveMap);
       } else {
         return game.move(moveStr);
       }
@@ -149,12 +172,65 @@ class _StepbackScreenState extends State<StepbackScreen> {
     }
   }
 
+  void _recordMentalStepOnSim(
+    chess_lib.Chess simGame,
+    String moveStr,
+    Map<String, String> originOfSquare,
+    String stepLabel,
+  ) {
+    final beforeMap = _getChessboardMap(simGame);
+    final turnPrefix = simGame.turn == chess_lib.Color.WHITE ? 'w' : 'b';
+    final san = _formatSAN(simGame, moveStr);
+    final moved = _makeMove(simGame, moveStr);
+    if (!moved) return;
+    final afterMap = _getChessboardMap(simGame);
+
+    String? fromSq;
+    String? toSq;
+
+    if (RegExp(r'^[a-h][1-8][a-h][1-8]').hasMatch(moveStr)) {
+      fromSq = moveStr.substring(0, 2);
+      toSq = moveStr.substring(2, 4);
+    } else if (san.startsWith('O-O')) {
+      final rank = turnPrefix == 'w' ? '1' : '8';
+      fromSq = 'e$rank';
+      toSq = san.startsWith('O-O-O') ? 'c$rank' : 'g$rank';
+    } else {
+      for (final sq in beforeMap.keys) {
+        if (beforeMap[sq]!.startsWith(turnPrefix) && !afterMap.containsKey(sq)) {
+          fromSq = sq;
+          break;
+        }
+      }
+      for (final sq in afterMap.keys) {
+        if (afterMap[sq]!.startsWith(turnPrefix) && beforeMap[sq] != afterMap[sq]) {
+          toSq = sq;
+          break;
+        }
+      }
+    }
+
+    if (fromSq != null) _pieceMarkers.add(fromSq);
+    if (toSq != null) _pieceMarkers.add(toSq);
+
+    if (fromSq != null && toSq != null) {
+      final origin = originOfSquare.remove(fromSq) ?? fromSq;
+      originOfSquare[toSq] = origin;
+    }
+
+    _setupReplaySteps.add({
+      'position': afterMap,
+      'label': '$stepLabel ($san)',
+    });
+  }
+
   void _setupStepbackPosition() {
     if (_currentPuzzle == null) return;
     final puzzle = _currentPuzzle!;
 
     _movesTable.clear();
     _pieceMarkers.clear();
+    _setupReplaySteps.clear();
 
     final int targetHeadMoves = _visualizationDepth; // e.g., 1, 2, 3, 4, 5
     final int preMovesNeeded = targetHeadMoves - 1; // e.g., 0, 1, 2, 3, 4
@@ -167,28 +243,34 @@ class _StepbackScreenState extends State<StepbackScreen> {
 
     // Simulate game from standard start position up to startPly
     final tempGame = chess_lib.Chess();
-    if (gameMoves.isNotEmpty && gameMoves.length >= startPly && startPly > 0) {
+    if (preMovesNeeded == 0) {
+      tempGame.load(puzzle.fen);
+    } else if (gameMoves.isNotEmpty && gameMoves.length >= totalPly) {
       for (int i = 0; i < startPly; i++) {
         _makeMove(tempGame, gameMoves[i]);
       }
     } else {
-      // Fallback: start at puzzle FEN if gameMoves unavailable
       tempGame.load(puzzle.fen);
     }
 
     _activeGame = tempGame;
     _boardPosition = _getChessboardMap(_activeGame);
+    _stepbackStartPosition = Map<String, String>.from(_boardPosition);
+
+    final Map<String, String> originOfSquare = {
+      for (final sq in _boardPosition.keys) sq: sq,
+    };
 
     // Track move simulation state to generate SAN labels for movesTable
     final simGame = chess_lib.Chess.fromFEN(_activeGame.generate_fen());
     int moveNo = 1;
 
     // 1. Add setup pre-moves
-    if (gameMoves.isNotEmpty && gameMoves.length >= totalPly) {
+    if (preMovesNeeded > 0 && gameMoves.isNotEmpty && gameMoves.length >= totalPly) {
       for (int i = startPly; i < totalPly; i++) {
         final m = gameMoves[i];
         final sanMove = _formatSAN(simGame, m);
-        _makeMove(simGame, m);
+        _recordMentalStepOnSim(simGame, m, originOfSquare, 'Setup Move $moveNo');
 
         _movesTable.add({
           'moveNo': '$moveNo',
@@ -197,13 +279,13 @@ class _StepbackScreenState extends State<StepbackScreen> {
         });
         moveNo++;
       }
-    } else if (puzzle.preMoves.isNotEmpty) {
+    } else if (preMovesNeeded > 0 && puzzle.preMoves.isNotEmpty) {
       final preMoves = puzzle.preMoves;
       int takePreMoves = preMoves.length >= preMovesNeeded ? preMovesNeeded : preMoves.length;
       for (int i = 0; i < takePreMoves; i++) {
         final pm = preMoves[preMoves.length - takePreMoves + i];
         final sanPM = _formatSAN(simGame, pm);
-        _makeMove(simGame, pm);
+        _recordMentalStepOnSim(simGame, pm, originOfSquare, 'Setup Move $moveNo');
 
         _movesTable.add({
           'moveNo': '$moveNo',
@@ -218,7 +300,7 @@ class _StepbackScreenState extends State<StepbackScreen> {
     if (_solutionMoves.isNotEmpty) {
       final blunder = _solutionMoves[0];
       final sanBlunder = _formatSAN(simGame, blunder);
-      _makeMove(simGame, blunder);
+      _recordMentalStepOnSim(simGame, blunder, originOfSquare, 'Opponent Move');
 
       _movesTable.add({
         'moveNo': '$moveNo',
@@ -227,9 +309,14 @@ class _StepbackScreenState extends State<StepbackScreen> {
       });
     }
 
+    if (_solutionMoves.length > 1 && _solutionMoves[1].length >= 4) {
+      final expectedFrom = _solutionMoves[1].substring(0, 2);
+      _originSquareOfFirstMove = originOfSquare[expectedFrom] ?? expectedFrom;
+      _pieceMarkers.add(_originSquareOfFirstMove!);
+    }
+
     setState(() {});
   }
-
 
   Map<String, String> _getChessboardMap(chess_lib.Chess game) {
     final Map<String, String> pos = {};
@@ -250,46 +337,128 @@ class _StepbackScreenState extends State<StepbackScreen> {
     return pos;
   }
 
-  void _handleSquareTap(String square) {
-    if (_gameState != 'solving') return;
+  Future<void> _handleSquareTap(String square) async {
+    if (_gameState != 'solving' || _currentPuzzle == null) return;
+    if (_stepIndex >= _solutionMoves.length) return;
+
+    final expectedMove = _solutionMoves[_stepIndex];
+    final expectedFrom = expectedMove.length >= 4 ? expectedMove.substring(0, 2) : '';
+    final expectedTo = expectedMove.length >= 4 ? expectedMove.substring(2, 4) : '';
 
     if (_selectedSquares.isEmpty) {
-      // Select piece
-      if (_boardPosition.containsKey(square)) {
+      // Allow selecting any square with a visible piece OR the mental expectedFrom square
+      if (_boardPosition.containsKey(square) || (_stepIndex == 1 && square == expectedFrom)) {
         setState(() {
           _selectedSquares = {square};
         });
       }
-    } else {
-      final from = _selectedSquares.first;
-      final to = square;
-      _selectedSquares.clear();
+      return;
+    }
 
-      final moveUCI = '$from$to';
-      final expectedMove = _solutionMoves[_stepIndex];
-      final expectedFrom = expectedMove.length >= 4 ? expectedMove.substring(0, 2) : '';
-      final expectedTo = expectedMove.length >= 4 ? expectedMove.substring(2, 4) : '';
+    final from = _selectedSquares.first;
+    final to = square;
 
-      final selectedPiece = _boardPosition[from];
-      final expectedPiece = _currentPuzzle != null ? chess_lib.Chess.fromFEN(_currentPuzzle!.fen).get(expectedFrom) : null;
-      final expectedPieceType = expectedPiece != null ? '${expectedPiece.color == chess_lib.Color.WHITE ? "w" : "b"}${expectedPiece.type.name.toUpperCase()}' : '';
+    // Tapping the same square deselects without costing energy
+    if (from == to) {
+      setState(() {
+        _selectedSquares.clear();
+      });
+      return;
+    }
 
-      bool isCorrect = (moveUCI == expectedMove || expectedMove.startsWith(moveUCI)) ||
-                       (to == expectedTo && selectedPiece != null && selectedPiece == expectedPieceType);
+    // In live board follow-up steps (_stepIndex > 1), tapping another own piece switches selection
+    final playerPrefix = _playerColor == 'white' ? 'w' : 'b';
+    if (_stepIndex > 1 &&
+        _boardPosition[to]?.startsWith(playerPrefix) == true &&
+        to != expectedTo) {
+      setState(() {
+        _selectedSquares = {to};
+      });
+      return;
+    }
 
-      if (isCorrect) {
-        // Correct move!
-        _audioService.playMove();
+    // Ensure the user has energy before evaluating a move attempt
+    final currentEnergy = await _storageService.getRemainingEnergy();
+    if (!mounted) return;
+    if (currentEnergy <= 0) {
+      setState(() {
+        _selectedSquares.clear();
+      });
+      EnergyDialog.show(context, onRefilled: () {});
+      return;
+    }
 
+    _selectedSquares.clear();
+
+    final bool isCorrect = to == expectedTo &&
+        (from == expectedFrom ||
+            (_stepIndex == 1 && _originSquareOfFirstMove != null && from == _originSquareOfFirstMove));
+
+    if (isCorrect) {
+      if (_stepIndex == 1) {
         final fenGame = chess_lib.Chess.fromFEN(_currentPuzzle!.fen);
         if (_solutionMoves.isNotEmpty) {
-          fenGame.move({'from': _solutionMoves[0].substring(0, 2), 'to': _solutionMoves[0].substring(2, 4)});
+          _makeMove(fenGame, _solutionMoves[0]);
         }
-        fenGame.move({'from': expectedFrom, 'to': expectedTo});
-
+        final wasCapture = fenGame.get(expectedTo) != null;
+        _makeMove(fenGame, expectedMove);
         _activeGame = fenGame;
         _boardPosition = _getChessboardMap(_activeGame);
 
+        if (_activeGame.in_check) {
+          _audioService.playCheck();
+        } else if (wasCapture) {
+          _audioService.playCapture();
+        } else {
+          _audioService.playMove();
+        }
+      } else {
+        final wasCapture = _activeGame.get(expectedTo) != null;
+        _makeMove(_activeGame, expectedMove);
+        _boardPosition = _getChessboardMap(_activeGame);
+
+        if (_activeGame.in_check) {
+          _audioService.playCheck();
+        } else if (wasCapture) {
+          _audioService.playCapture();
+        } else {
+          _audioService.playMove();
+        }
+      }
+
+      // Check if there is a follow-up opponent response + next player move in the solution
+      if (_stepIndex + 2 < _solutionMoves.length) {
+        setState(() {
+          _greenHighlights = {expectedFrom, expectedTo};
+          _gameState = 'opponent_moving';
+        });
+
+        final opponentMove = _solutionMoves[_stepIndex + 1];
+        final oppFrom = opponentMove.length >= 4 ? opponentMove.substring(0, 2) : '';
+        final oppTo = opponentMove.length >= 4 ? opponentMove.substring(2, 4) : '';
+
+        Future.delayed(const Duration(milliseconds: 450), () {
+          if (!mounted || _currentPuzzle == null) return;
+          final wasCapture = _activeGame.get(oppTo) != null;
+          _makeMove(_activeGame, opponentMove);
+          _boardPosition = _getChessboardMap(_activeGame);
+
+          if (_activeGame.in_check) {
+            _audioService.playCheck();
+          } else if (wasCapture) {
+            _audioService.playCapture();
+          } else {
+            _audioService.playMove();
+          }
+
+          setState(() {
+            _stepIndex += 2;
+            _greenHighlights = {oppFrom, oppTo};
+            _gameState = 'solving';
+          });
+        });
+      } else {
+        // Entire puzzle sequence solved!
         setState(() {
           _greenHighlights = {expectedFrom, expectedTo};
           _gameState = 'feedback';
@@ -299,7 +468,6 @@ class _StepbackScreenState extends State<StepbackScreen> {
         _audioService.playSuccess();
         _buildHistoryReplay();
 
-        // Smoothly auto-scroll to bottom to reveal feedback & next button
         Future.delayed(const Duration(milliseconds: 200), () {
           if (mounted && _scrollController.hasClients) {
             _scrollController.animateTo(
@@ -309,27 +477,31 @@ class _StepbackScreenState extends State<StepbackScreen> {
             );
           }
         });
-      } else {
-        // Incorrect move: costs 1 energy!
-        _audioService.playError();
-        setState(() {
-          _errorSquares = {from, to};
-        });
-
-        _storageService.consumeEnergy().then((hasEnergy) {
-          if (!hasEnergy && mounted) {
-            EnergyDialog.show(context, onRefilled: () {});
-          }
-        });
-
-        Future.delayed(const Duration(milliseconds: 800), () {
-          if (mounted) {
-            setState(() {
-              _errorSquares.clear();
-            });
-          }
-        });
       }
+    } else {
+      // Incorrect move: costs 1 energy!
+      _audioService.playError();
+      if (!_recordedMistakeForCurrentPuzzle) {
+        _recordedMistakeForCurrentPuzzle = true;
+        _storageService.recordActivity(false, updatePuzzleStats: false);
+      }
+      setState(() {
+        _errorSquares = {from, to};
+      });
+
+      _storageService.consumeEnergy().then((hasEnergy) {
+        if (!hasEnergy && mounted) {
+          EnergyDialog.show(context, onRefilled: () {});
+        }
+      });
+
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (mounted) {
+          setState(() {
+            _errorSquares.clear();
+          });
+        }
+      });
     }
   }
 
@@ -337,18 +509,30 @@ class _StepbackScreenState extends State<StepbackScreen> {
     _historyStates.clear();
     if (_currentPuzzle == null) return;
 
-    final game = chess_lib.Chess.fromFEN(_currentPuzzle!.fen);
     _historyStates.add({
-      'position': _getChessboardMap(game),
-      'label': 'Start Position',
+      'position': Map<String, String>.from(_stepbackStartPosition),
+      'label': 'Stepback Start',
     });
 
-    for (int i = 0; i < _solutionMoves.length; i++) {
+    for (final step in _setupReplaySteps) {
+      _historyStates.add({
+        'position': Map<String, String>.from(step['position'] as Map<String, String>),
+        'label': step['label'] as String,
+      });
+    }
+
+    final game = chess_lib.Chess.fromFEN(_currentPuzzle!.fen);
+    if (_solutionMoves.isNotEmpty) {
+      _makeMove(game, _solutionMoves[0]);
+    }
+
+    for (int i = 1; i < _solutionMoves.length; i++) {
       final move = _solutionMoves[i];
-      game.move({'from': move.substring(0, 2), 'to': move.substring(2, 4)});
+      final san = _formatSAN(game, move);
+      _makeMove(game, move);
       _historyStates.add({
         'position': _getChessboardMap(game),
-        'label': i == 0 ? 'Blunder' : (i % 2 == 1 ? 'Your Move' : 'Response'),
+        'label': i % 2 == 1 ? 'Your Move ($san)' : 'Opponent Reply ($san)',
       });
     }
 
@@ -367,6 +551,11 @@ class _StepbackScreenState extends State<StepbackScreen> {
           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.palette_outlined, color: Color(0xFF38BDF8)),
+            tooltip: 'Board Theme',
+            onPressed: () => ChessboardWidget.showThemePicker(context),
+          ),
           IconButton(
             icon: const Icon(Icons.info_outline, color: Color(0xFF38BDF8)),
             tooltip: 'How to Play',
@@ -464,7 +653,9 @@ class _StepbackScreenState extends State<StepbackScreen> {
               selectedSquares: _selectedSquares,
               greenHighlights: _greenHighlights,
               errorSquares: _errorSquares,
-              pieceMarkers: _visualAid ? _pieceMarkers : const {},
+              pieceMarkers: (_visualAid && _stepIndex == 1 && _gameState == 'solving')
+                  ? _pieceMarkers
+                  : const {},
               onSquareTap: _handleSquareTap,
             ),
 
@@ -534,7 +725,7 @@ class _StepbackScreenState extends State<StepbackScreen> {
 
             const SizedBox(height: 16),
 
-            if (_gameState == 'solving') ...[
+            if (_gameState == 'solving' || _gameState == 'opponent_moving') ...[
               Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
@@ -548,7 +739,9 @@ class _StepbackScreenState extends State<StepbackScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        'Your turn! Find and play the winning move on the board for $_playerColor!',
+                        _stepIndex == 1
+                            ? 'Your turn! Find and play the winning move on the board for $_playerColor!'
+                            : 'Great first move! Now find the follow-up winning move for $_playerColor!',
                         style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
                       ),
                     ),
@@ -599,9 +792,21 @@ class _StepbackScreenState extends State<StepbackScreen> {
                       }
                     },
                   ),
-                  Text(
-                    'Step ${_historyIndex + 1}/${_historyStates.length}',
-                    style: const TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold),
+                  Flexible(
+                    child: Column(
+                      children: [
+                        Text(
+                          'Step ${_historyIndex + 1}/${_historyStates.length}',
+                          style: const TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold),
+                        ),
+                        if (_historyStates.isNotEmpty)
+                          Text(
+                            '${_historyStates[_historyIndex]['label']}',
+                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                            textAlign: TextAlign.center,
+                          ),
+                      ],
+                    ),
                   ),
                   IconButton(
                     icon: const Icon(Icons.arrow_right, color: Colors.white, size: 36),
@@ -624,22 +829,6 @@ class _StepbackScreenState extends State<StepbackScreen> {
                 ],
               ),
               const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6366F1),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  icon: const Icon(Icons.arrow_forward, color: Colors.white),
-                  label: const Text(
-                    'Next Puzzle',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
-                  ),
-                  onPressed: _loadNewPuzzle,
-                ),
-              ),
             ],
           ],
         ),

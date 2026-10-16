@@ -9,9 +9,15 @@ class AdService {
   RewardedAd? _rewardedAd;
   bool _isRewardedAdReady = false;
 
-  // Production Ad Unit ID created in AdMob
-  final String _androidRewardedUnitId = 'ca-app-pub-2418724595418305/7424811369';
-
+  // Production Ad Unit ID created in AdMob (with official Google Test ID in debug mode)
+  String get _rewardedUnitId {
+    if (kDebugMode) {
+      return defaultTargetPlatform == TargetPlatform.iOS
+          ? 'ca-app-pub-3940256099942544/1712485313'
+          : 'ca-app-pub-3940256099942544/5224354917';
+    }
+    return 'ca-app-pub-2418724595418305/7424811369';
+  }
 
   Future<void> initialize() async {
     if (kIsWeb) return;
@@ -22,8 +28,7 @@ class AdService {
   void loadRewardedAd() {
     if (kIsWeb) return;
     RewardedAd.load(
-      adUnitId: _androidRewardedUnitId,
-
+      adUnitId: _rewardedUnitId,
       request: const AdRequest(),
       rewardedAdLoadCallback: RewardedAdLoadCallback(
         onAdLoaded: (ad) {
@@ -31,29 +36,44 @@ class AdService {
           _isRewardedAdReady = true;
         },
         onAdFailedToLoad: (error) {
+          _rewardedAd = null;
           _isRewardedAdReady = false;
         },
       ),
     );
   }
 
-  void showRewardedAd({required Function onUserEarnedReward}) {
+  void showRewardedAd({
+    required VoidCallback onUserEarnedReward,
+    VoidCallback? onAdFailed,
+  }) {
     if (!_isRewardedAdReady || _rewardedAd == null) {
-      // Fallback: grant reward directly if ad is not ready during testing
-      onUserEarnedReward();
       loadRewardedAd();
+      if (kDebugMode) {
+        onUserEarnedReward();
+      } else if (onAdFailed != null) {
+        onAdFailed();
+      }
       return;
     }
 
     _rewardedAd!.fullScreenContentCallback = FullScreenContentCallback(
       onAdDismissedFullScreenContent: (ad) {
         ad.dispose();
+        _rewardedAd = null;
+        _isRewardedAdReady = false;
         loadRewardedAd();
       },
       onAdFailedToShowFullScreenContent: (ad, error) {
         ad.dispose();
-        onUserEarnedReward();
+        _rewardedAd = null;
+        _isRewardedAdReady = false;
         loadRewardedAd();
+        if (kDebugMode) {
+          onUserEarnedReward();
+        } else if (onAdFailed != null) {
+          onAdFailed();
+        }
       },
     );
 

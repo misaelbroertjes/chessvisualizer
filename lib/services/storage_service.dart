@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user_stats.dart';
 
@@ -15,7 +16,10 @@ class StorageService {
   static const String _keyElo = 'user_elo';
   static const String _keyEnergyCount = 'energy_count';
   static const String _keyLastEnergyReset = 'last_energy_reset';
+  static const String _keyBoardTheme = 'board_theme';
   static const int maxEnergy = 10;
+
+  final ValueNotifier<String> boardThemeNotifier = ValueNotifier<String>('slate');
 
   Future<int> getRemainingEnergy() async {
     final prefs = await SharedPreferences.getInstance();
@@ -79,9 +83,12 @@ class StorageService {
             await prefs.setInt(_keyPreviousStreak, streak);
           }
           streak = 0;
+          await prefs.setInt(_keyStreak, 0);
         }
       }
     }
+
+    final previousStreak = prefs.getInt(_keyPreviousStreak) ?? 0;
 
     return UserStats(
       streakDays: streak,
@@ -91,10 +98,11 @@ class StorageService {
       totalPuzzlesSolved: prefs.getInt(_keyPuzzlesSolved) ?? 0,
       totalAttempts: prefs.getInt(_keyTotalAttempts) ?? 0,
       eloRating: prefs.getInt(_keyElo) ?? 1200,
+      canRestoreStreak: streak == 0 && previousStreak > 0,
     );
   }
 
-  Future<void> recordActivity(bool success) async {
+  Future<void> recordActivity(bool success, {bool updatePuzzleStats = true}) async {
     final prefs = await SharedPreferences.getInstance();
     int solved = prefs.getInt(_keyPuzzlesSolved) ?? 0;
     int attempts = prefs.getInt(_keyTotalAttempts) ?? 0;
@@ -102,8 +110,10 @@ class StorageService {
 
     attempts++;
     if (success) {
-      solved++;
-      elo += 12;
+      if (updatePuzzleStats) {
+        solved++;
+      }
+      elo = (elo + 12).clamp(800, 3000);
     } else {
       elo = (elo - 8).clamp(800, 3000);
     }
@@ -112,7 +122,9 @@ class StorageService {
     await prefs.setInt(_keyPuzzlesSolved, solved);
     await prefs.setInt(_keyElo, elo);
 
-    await updateStreak();
+    if (success) {
+      await updateStreak();
+    }
   }
 
   Future<void> updateStreak() async {
@@ -140,6 +152,9 @@ class StorageService {
       }
       await prefs.setString(_keyLastDate, today);
       await prefs.setInt(_keyStreak, streak);
+    } else if (streak == 0) {
+      streak = 1;
+      await prefs.setInt(_keyStreak, streak);
     }
   }
 
@@ -166,9 +181,11 @@ class StorageService {
   Future<int> restoreStreak() async {
     final prefs = await SharedPreferences.getInstance();
     final today = _getTodayString();
-    int prev = prefs.getInt(_keyPreviousStreak) ?? 1;
-    int restored = prev > 0 ? prev : 1;
+    final current = prefs.getInt(_keyStreak) ?? 0;
+    final prev = prefs.getInt(_keyPreviousStreak) ?? 1;
+    final restored = current > prev ? current : (prev > 0 ? prev : 1);
     await prefs.setInt(_keyStreak, restored);
+    await prefs.setInt(_keyPreviousStreak, 0);
     await prefs.setString(_keyLastDate, today);
     return restored;
   }
@@ -187,5 +204,19 @@ class StorageService {
   Future<void> setSeenModeInfo(String modeKey) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('seen_info_$modeKey', true);
+  }
+
+  Future<String> loadBoardTheme() async {
+    final prefs = await SharedPreferences.getInstance();
+    final theme = prefs.getString(_keyBoardTheme) ?? 'slate';
+    boardThemeNotifier.value = theme;
+    return theme;
+  }
+
+  Future<void> saveBoardTheme(String themeId) async {
+    boardThemeNotifier.value = themeId;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('seen_theme_picker', true);
+    await prefs.setString(_keyBoardTheme, themeId);
   }
 }

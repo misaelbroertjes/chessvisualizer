@@ -79,6 +79,13 @@ class _EnergyDialogState extends State<EnergyDialog> {
           );
         }
       },
+      onAdFailed: () {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Ad not ready yet. Please check your connection and try again.')),
+          );
+        }
+      },
     );
   }
 

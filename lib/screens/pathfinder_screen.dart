@@ -42,6 +42,8 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
   bool _showDanger = false;
   bool _isCompleted = false;
   bool _isFailed = false;
+  bool _failedByAttack = true;
+  int _failedAtLevel = 1;
   int _dangerHintCount = 0;
   Timer? _dangerFlashTimer;
   Set<String> _greenHighlights = {};
@@ -78,7 +80,7 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
   }
 
   void _skipOrGiveUpPuzzle() {
-    _generateLayout(consume: false);
+    _generateLayout(consume: true);
   }
 
   void _restartCurrentRoute() {
@@ -134,6 +136,7 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
       }
 
       _knightSquare = allSquares[startIdx];
+      _initialKnightSquare = _knightSquare;
       _targetSquare = allSquares[targetIdx];
       _movesCount = 0;
       _dangerHintCount = 0;
@@ -155,11 +158,17 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
         _enemyPieces[sq] = piece;
       }
 
+      _initialEnemyPieces.clear();
+      _initialEnemyPieces.addAll(_enemyPieces);
+
       _recalculateControlledSquares();
       _minMoves = _findShortestPathLength() ?? 0;
 
-      // Ensure target square is NOT in danger zone and shortest path exists
-    } while ((_controlledSquares.contains(_targetSquare) || _minMoves == 0) && attempts < 60);
+      // Ensure start & target squares are NOT in danger zone and shortest path exists
+    } while ((_controlledSquares.contains(_knightSquare) ||
+            _controlledSquares.contains(_targetSquare) ||
+            _minMoves == 0) &&
+        attempts < 80);
 
     // Fallback safety if attempts exceeded
     if (_controlledSquares.contains(_targetSquare)) {
@@ -171,37 +180,106 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
     _initialEnemyPieces.clear();
     _initialEnemyPieces.addAll(Map<String, String>.from(_enemyPieces));
 
+    if (!mounted) return;
     setState(() {
       _selectedSquares = {_knightSquare};
     });
   }
 
+  Set<String> _computeControlledForMap(Map<String, String> enemies) {
+    final controlled = <String>{};
+    for (var entry in enemies.entries) {
+      final attackerSq = entry.key;
+      final piece = entry.value;
+      final type = piece[1]; // 'B', 'R', 'Q'
+
+      final f0 = attackerSq.codeUnitAt(0) - 97;
+      final r0 = int.parse(attackerSq[1]) - 1;
+
+      final directions = <List<int>>[];
+      if (type == 'B' || type == 'Q') {
+        directions.addAll([
+          [-1, -1],
+          [-1, 1],
+          [1, -1],
+          [1, 1]
+        ]);
+      }
+      if (type == 'R' || type == 'Q') {
+        directions.addAll([
+          [-1, 0],
+          [1, 0],
+          [0, -1],
+          [0, 1]
+        ]);
+      }
+
+      for (var dir in directions) {
+        int cf = f0 + dir[0];
+        int cr = r0 + dir[1];
+
+        while (cf >= 0 && cf < 8 && cr >= 0 && cr < 8) {
+          final targetSq = '${String.fromCharCode(97 + cf)}${cr + 1}';
+          controlled.add(targetSq);
+          if (enemies.containsKey(targetSq)) {
+            break;
+          }
+          cf += dir[0];
+          cr += dir[1];
+        }
+      }
+    }
+    return controlled;
+  }
+
   List<String>? _findShortestPath() {
-    final queue = [
-      [_initialKnightSquare, <String>[_initialKnightSquare]]
+    final queue = <Map<String, dynamic>>[
+      {
+        'sq': _initialKnightSquare,
+        'path': <String>[_initialKnightSquare],
+        'enemies': Map<String, String>.from(_initialEnemyPieces),
+      }
     ];
-    final visited = <String>{_initialKnightSquare};
+
+    String stateKey(String sq, Map<String, String> enemies) {
+      final keys = enemies.keys.toList()..sort();
+      return '$sq|${keys.join(',')}';
+    }
+
+    final visited = <String>{stateKey(_initialKnightSquare, _initialEnemyPieces)};
 
     while (queue.isNotEmpty) {
       final item = queue.removeAt(0);
-      final curr = item[0] as String;
-      final path = item[1] as List<String>;
+      final curr = item['sq'] as String;
+      final path = item['path'] as List<String>;
+      final enemies = item['enemies'] as Map<String, String>;
 
       if (curr == _targetSquare) return path;
 
+      final controlled = _computeControlledForMap(enemies);
+
       for (var next in _getKnightMoves(curr)) {
-        if (visited.contains(next)) continue;
-        if (_controlledSquares.contains(next)) continue;
-        final isEnemy = _enemyPieces.containsKey(next);
+        if (controlled.contains(next)) continue;
+        final isEnemy = enemies.containsKey(next);
         if (!_allowCaptures && isEnemy) continue;
 
-        visited.add(next);
-        queue.add([next, [...path, next]]);
+        final nextEnemies = isEnemy && _allowCaptures
+            ? (Map<String, String>.from(enemies)..remove(next))
+            : enemies;
+
+        final key = stateKey(next, nextEnemies);
+        if (visited.contains(key)) continue;
+
+        visited.add(key);
+        queue.add({
+          'sq': next,
+          'path': [...path, next],
+          'enemies': nextEnemies,
+        });
       }
     }
     return null;
   }
-
 
   void _recalculateControlledSquares() {
     _controlledSquares.clear();
@@ -233,8 +311,8 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
           _controlledSquares.add(targetSq);
           _squareAttackers.putIfAbsent(targetSq, () => {}).add(attackerSq);
 
-          // Ray stops if blocked by another enemy piece or the knight
-          if (_enemyPieces.containsKey(targetSq) || targetSq == _knightSquare) {
+          // Ray stops if blocked by another enemy piece
+          if (_enemyPieces.containsKey(targetSq)) {
             break;
           }
 
@@ -246,29 +324,9 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
   }
 
   int? _findShortestPathLength() {
-    final queue = [
-      [_knightSquare, 0]
-    ];
-    final visited = <String>{_knightSquare};
-
-    while (queue.isNotEmpty) {
-      final item = queue.removeAt(0);
-      final curr = item[0] as String;
-      final dist = item[1] as int;
-
-      if (curr == _targetSquare) return dist;
-
-      for (var next in _getKnightMoves(curr)) {
-        if (visited.contains(next)) continue;
-        if (_controlledSquares.contains(next)) continue;
-        final isEnemy = _enemyPieces.containsKey(next);
-        if (!_allowCaptures && isEnemy) continue;
-
-        visited.add(next);
-        queue.add([next, dist + 1]);
-      }
-    }
-    return null;
+    final path = _findShortestPath();
+    if (path == null || path.length < 2) return null;
+    return path.length - 1;
   }
 
   List<String> _getKnightMoves(String sq) {
@@ -292,7 +350,7 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
   }
 
   void _handleSquareTap(String to) {
-    if (_isCompleted) return;
+    if (_isCompleted || _isFailed) return;
 
     final f1 = _knightSquare.codeUnitAt(0) - 97;
     final r1 = int.parse(_knightSquare[1]);
@@ -323,6 +381,9 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
 
     if (_controlledSquares.contains(to)) {
       _audioService.playError();
+      _storageService.recordActivity(false, updatePuzzleStats: false);
+      _failedAtLevel = _level;
+      _storageService.savePathfinderLevel(1);
       _storageService.consumeEnergy().then((hasEnergy) {
         if (!hasEnergy && mounted) {
           EnergyDialog.show(context, onRefilled: () {});
@@ -333,6 +394,7 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
 
       setState(() {
         _isFailed = true;
+        _failedByAttack = true;
         _errorSquares = {to, ...attackers};
         _greenHighlights = solution.toSet();
       });
@@ -343,7 +405,6 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
     bool captured = false;
     if (isEnemy && _allowCaptures) {
       _enemyPieces.remove(to);
-      _recalculateControlledSquares();
       captured = true;
     }
 
@@ -351,6 +412,9 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
       _knightSquare = to;
       _selectedSquares = {to};
       _movesCount++;
+      if (captured) {
+        _recalculateControlledSquares();
+      }
     });
 
     if (captured) {
@@ -366,13 +430,16 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
 
     // Win condition check
     if (_knightSquare == _targetSquare) {
-      int extraMoves = _movesCount - _minMoves;
-      int totalPenalty = (extraMoves > 0 ? extraMoves : 0) + _dangerHintCount;
-      int stars = 3 - totalPenalty;
+      final int extraMoves = max(0, _movesCount - _minMoves);
+      final int totalPenalty = extraMoves + _dangerHintCount;
+      final int stars = 3 - totalPenalty;
 
       if (stars <= 0) {
         // Route failed because player took too many extra moves or hints!
         _audioService.playError();
+        _storageService.recordActivity(false, updatePuzzleStats: false);
+        _failedAtLevel = _level;
+        _storageService.savePathfinderLevel(1);
         _storageService.consumeEnergy().then((hasEnergy) {
           if (!hasEnergy && mounted) {
             EnergyDialog.show(context, onRefilled: () {});
@@ -382,6 +449,7 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
         final solution = _findShortestPath() ?? [];
         setState(() {
           _isFailed = true;
+          _failedByAttack = false;
           _greenHighlights = solution.toSet();
         });
       } else {
@@ -427,10 +495,10 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
       ..._enemyPieces,
     };
 
-    int extraMoves = _movesCount - _minMoves;
-    int totalPenalty = (extraMoves > 0 ? extraMoves : 0) + _dangerHintCount;
+    final int extraMoves = max(0, _movesCount - _minMoves);
+    final int totalPenalty = extraMoves + _dangerHintCount;
 
-    int stars = max(0, 3 - totalPenalty);
+    final int stars = max(0, 3 - totalPenalty);
     String starRatingTitle = '⭐ 1 Star Route';
     String starSubtitle = 'Used $_movesCount moves ($extraMoves extra moves, $_dangerHintCount danger hints used).';
 
@@ -455,6 +523,11 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
         elevation: 0,
         title: const Text('Knight Pathfinder', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.palette_outlined, color: Color(0xFF38BDF8)),
+            tooltip: 'Board Theme',
+            onPressed: () => ChessboardWidget.showThemePicker(context),
+          ),
           IconButton(
             icon: const Icon(Icons.info_outline, color: Color(0xFF38BDF8)),
             tooltip: 'How to Play',
@@ -507,12 +580,14 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
                   style: TextStyle(color: Colors.grey, fontSize: 11),
                 ),
                 value: _allowCaptures,
-                onChanged: (val) {
-                  setState(() {
-                    _allowCaptures = val;
-                    _generateLayout(consume: false);
-                  });
-                },
+                onChanged: (_isFailed || _isCompleted)
+                    ? null
+                    : (val) {
+                        setState(() {
+                          _allowCaptures = val;
+                          _generateLayout(consume: false);
+                        });
+                      },
               ),
             ),
 
@@ -583,16 +658,20 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: const Color(0xFFEF4444)),
                 ),
-                child: const Column(
+                child: Column(
                   children: [
                     Text(
-                      '💥 Attacked Square! Level Failed',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFFEF4444)),
+                      _failedByAttack
+                          ? '💥 Attacked Square! Level Failed'
+                          : '❌ Route Inefficient! Level Failed',
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFFEF4444)),
                     ),
-                    SizedBox(height: 8),
+                    const SizedBox(height: 8),
                     Text(
-                      'The optimal solution path is highlighted in green on the board above.',
-                      style: TextStyle(color: Colors.white70, fontSize: 13),
+                      _failedByAttack
+                          ? 'The optimal solution path is highlighted in green on the board above.'
+                          : '$starSubtitle Optimal path is highlighted in green.',
+                      style: const TextStyle(color: Colors.white70, fontSize: 13),
                       textAlign: TextAlign.center,
                     ),
                   ],
@@ -610,9 +689,17 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
                       icon: const Icon(Icons.shield, color: Color(0xFFF59E0B)),
                       label: const Text('Keep Level & Retry (Ad)', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
                       onPressed: () {
+                        final messenger = ScaffoldMessenger.of(context);
                         _adService.showRewardedAd(
                           onUserEarnedReward: () {
+                            _level = _failedAtLevel;
+                            _storageService.savePathfinderLevel(_level);
                             _restartCurrentRoute();
+                          },
+                          onAdFailed: () {
+                            messenger.showSnackBar(
+                              const SnackBar(content: Text('Ad not ready yet. Please try again in a moment.')),
+                            );
                           },
                         );
                       },
@@ -627,20 +714,19 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       ),
                       icon: const Icon(Icons.refresh, color: Colors.white),
-                      label: const Text('Restart at Level 1 (-1⚡)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white)),
+                      label: const Text('Restart at Level 1 (0⚡)', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white)),
                       onPressed: () {
                         setState(() {
                           _level = 1;
                         });
                         _storageService.savePathfinderLevel(1);
-                        _generateLayout(consume: true);
+                        _generateLayout(consume: false);
                       },
                     ),
                   ),
                 ],
               ),
             ],
-
 
             if (_isCompleted) ...[
               Container(
@@ -676,9 +762,9 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
                 ),
               ),
               const SizedBox(height: 16),
-              if (stars == 1) ...[
-                Row(
-                  children: [
+              Row(
+                children: [
+                  if (stars < 3) ...[
                     Expanded(
                       child: OutlinedButton.icon(
                         style: OutlinedButton.styleFrom(
@@ -690,90 +776,31 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
                           'Retry for ⭐⭐⭐ (0⚡)',
                           style: TextStyle(color: Color(0xFFF59E0B), fontWeight: FontWeight.bold, fontSize: 13),
                         ),
-                        onPressed: _restartCurrentRoute,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF6366F1),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        icon: const Icon(Icons.arrow_forward, color: Colors.white),
-                        label: const Text('Next Level', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white)),
-                        onPressed: () => _generateLayout(consume: true),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      side: const BorderSide(color: Color(0xFF334155)),
-                    ),
-                    icon: const Icon(Icons.star, color: Color(0xFFF59E0B)),
-                    label: const Text('Streak Saver (Ad)', style: TextStyle(color: Colors.white)),
-                    onPressed: () {
-                      _adService.showRewardedAd(
-                        onUserEarnedReward: () async {
-                          final count = await _storageService.restoreStreak();
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('🔥 Streak Restored ($count Days)! Awesome!')),
-                            );
-                          }
-                        },
-                      );
-                    },
-                  ),
-                ),
-              ] else ...[
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          side: const BorderSide(color: Color(0xFF6366F1)),
-                        ),
-                        icon: const Icon(Icons.star, color: Color(0xFFF59E0B)),
-                        label: const Text('Streak Saver (Ad)', style: TextStyle(color: Colors.white)),
                         onPressed: () {
-                          _adService.showRewardedAd(
-                            onUserEarnedReward: () async {
-                              final count = await _storageService.restoreStreak();
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('🔥 Streak Restored ($count Days)! Awesome!')),
-                                );
-                              }
-                            },
-                          );
+                          setState(() {
+                            _level = max(1, _level - 1);
+                          });
+                          _storageService.savePathfinderLevel(_level);
+                          _restartCurrentRoute();
                         },
                       ),
                     ),
-
                     const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF6366F1),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        icon: const Icon(Icons.arrow_forward, color: Colors.white),
-                        label: const Text('Next Level', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
-                        onPressed: () => _generateLayout(consume: true),
-                      ),
-                    ),
                   ],
-                ),
-              ],
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF6366F1),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      icon: const Icon(Icons.arrow_forward, color: Colors.white),
+                      label: const Text('Next Level (0⚡)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white)),
+                      onPressed: () => _generateLayout(consume: false),
+                    ),
+                  ),
+                ],
+              ),
             ],
           ],
         ),

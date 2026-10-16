@@ -5,9 +5,8 @@ class UserStats {
   int coordinatesHighScore;
   int totalPuzzlesSolved;
   int totalAttempts;
-  int hourlySessionCount;
-  String lastSessionHour;
   int eloRating;
+  bool canRestoreStreak;
 
   UserStats({
     this.streakDays = 0,
@@ -16,9 +15,8 @@ class UserStats {
     this.coordinatesHighScore = 0,
     this.totalPuzzlesSolved = 0,
     this.totalAttempts = 0,
-    this.hourlySessionCount = 0,
-    this.lastSessionHour = '',
     this.eloRating = 1200,
+    this.canRestoreStreak = false,
   });
 
   double get successRate {

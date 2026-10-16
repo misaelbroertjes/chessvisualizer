@@ -33,11 +33,13 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
   String _orientation = 'white';
   String _boardOrientationSetting = 'white'; // 'white', 'black', 'random'
   String _penaltyMode = 'none'; // 'none', 'penalty', 'sudden_death'
+  bool _showCoordinates = true;
   bool _isPlaying = false;
   bool _isGameOver = false;
 
   Set<String> _greenHighlights = {};
   Set<String> _errorSquares = {};
+  final Random _random = Random();
 
   @override
   void initState() {
@@ -66,6 +68,7 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
 
   void _loadHighScore() async {
     final stats = await _storageService.loadUserStats();
+    if (!mounted) return;
     setState(() {
       _highScore = stats.coordinatesHighScore;
     });
@@ -95,7 +98,7 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
       } else if (_boardOrientationSetting == 'black') {
         _orientation = 'black';
       } else if (_boardOrientationSetting == 'random') {
-        _orientation = Random().nextBool() ? 'white' : 'black';
+        _orientation = _random.nextBool() ? 'white' : 'black';
       }
     });
 
@@ -103,17 +106,14 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
     _startTimer();
   }
 
-
-
   void _generateNextTarget() {
     final files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
     final ranks = ['1', '2', '3', '4', '5', '6', '7', '8'];
-    final random = Random();
 
     String next;
     do {
-      final f = files[random.nextInt(8)];
-      final r = ranks[random.nextInt(8)];
+      final f = files[_random.nextInt(8)];
+      final r = ranks[_random.nextInt(8)];
       next = '$f$r';
     } while (next == _targetSquare);
 
@@ -138,13 +138,15 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
   void _endGame() {
     _timer?.cancel();
     _audioService.playSuccess();
+    final updatedHighScore = max(_highScore, _score);
     setState(() {
       _isPlaying = false;
       _isGameOver = true;
+      _highScore = updatedHighScore;
     });
 
     _storageService.saveCoordsHighScore(_score);
-    _storageService.recordActivity(_score > 0);
+    _storageService.recordActivity(_score > 0, updatePuzzleStats: false);
   }
 
   void _handleSquareTap(String square) {
@@ -158,18 +160,15 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
         _greenHighlights = {square};
       });
 
-      if (_boardOrientationSetting == 'random') {
-        setState(() {
-          _orientation = _orientation == 'white' ? 'black' : 'white';
-        });
-      }
-
       _generateNextTarget();
 
       Future.delayed(const Duration(milliseconds: 150), () {
         if (mounted) {
           setState(() {
             _greenHighlights.clear();
+            if (_boardOrientationSetting == 'random' && _isPlaying) {
+              _orientation = _random.nextBool() ? 'white' : 'black';
+            }
           });
         }
       });
@@ -184,9 +183,13 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
       if (_penaltyMode == 'sudden_death') {
         _endGame();
       } else if (_penaltyMode == 'penalty') {
+        final nextTime = max(0.0, _timeLeft - 5.0);
         setState(() {
-          _timeLeft = max(0, _timeLeft - 5.0);
+          _timeLeft = nextTime;
         });
+        if (nextTime <= 0) {
+          _endGame();
+        }
       }
 
       Future.delayed(const Duration(milliseconds: 300), () {
@@ -210,6 +213,11 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
         elevation: 0,
         title: const Text('Coordinates Trainer', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.palette_outlined, color: Color(0xFF38BDF8)),
+            tooltip: 'Board Theme',
+            onPressed: () => ChessboardWidget.showThemePicker(context),
+          ),
           IconButton(
             icon: const Icon(Icons.info_outline, color: Color(0xFF38BDF8)),
             tooltip: 'How to Play',
@@ -267,6 +275,7 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
             ChessboardWidget(
               position: const {},
               orientation: _orientation,
+              showCoordinates: _showCoordinates,
               greenHighlights: _greenHighlights,
               errorSquares: _errorSquares,
               onSquareTap: _handleSquareTap,
@@ -309,7 +318,6 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
                     const SizedBox(height: 12),
                     DropdownButtonFormField<String>(
                       initialValue: _penaltyMode,
-
                       dropdownColor: const Color(0xFF1E293B),
                       decoration: const InputDecoration(
                         labelText: 'Penalty Mode',
@@ -326,6 +334,25 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
                             _penaltyMode = val;
                           });
                         }
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      activeThumbColor: const Color(0xFF10B981),
+                      title: const Text(
+                        'Show Edge Coordinates',
+                        style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: const Text(
+                        'Hide rank/file labels (a-h, 1-8) for blind board training',
+                        style: TextStyle(color: Colors.grey, fontSize: 11),
+                      ),
+                      value: _showCoordinates,
+                      onChanged: (val) {
+                        setState(() {
+                          _showCoordinates = val;
+                        });
                       },
                     ),
                   ],

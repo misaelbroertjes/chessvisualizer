@@ -1,16 +1,27 @@
 import 'package:flutter/services.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class AudioService {
   static final AudioService _instance = AudioService._internal();
   factory AudioService() => _instance;
   AudioService._internal();
 
+  static const String _keySoundEnabled = 'sound_enabled';
   final AudioPlayer _player = AudioPlayer();
   bool _soundEnabled = true;
 
-  void toggleSound(bool enable) {
+  bool get isSoundEnabled => _soundEnabled;
+
+  Future<void> initialize() async {
+    final prefs = await SharedPreferences.getInstance();
+    _soundEnabled = prefs.getBool(_keySoundEnabled) ?? true;
+  }
+
+  Future<void> toggleSound(bool enable) async {
     _soundEnabled = enable;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keySoundEnabled, enable);
   }
 
   Future<void> playMove() async {

@@ -3,6 +3,8 @@ import '../models/user_stats.dart';
 import '../services/storage_service.dart';
 import '../services/puzzle_service.dart';
 import '../services/ad_service.dart';
+import '../services/audio_service.dart';
+import '../widgets/chessboard_widget.dart';
 import 'stepback_screen.dart';
 import 'pathfinder_screen.dart';
 import 'coordinates_screen.dart';
@@ -21,9 +23,11 @@ class _HomeScreenState extends State<HomeScreen> {
   final StorageService _storageService = StorageService();
   final PuzzleService _puzzleService = PuzzleService();
   final AdService _adService = AdService();
+  final AudioService _audioService = AudioService();
 
   UserStats _stats = UserStats();
   bool _isLoading = true;
+  bool _soundEnabled = true;
 
   @override
   void initState() {
@@ -32,8 +36,15 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _initializeApp() async {
+    await _audioService.initialize();
+    await _storageService.loadBoardTheme();
     await _puzzleService.loadPuzzles();
     await _adService.initialize();
+    if (mounted) {
+      setState(() {
+        _soundEnabled = _audioService.isSoundEnabled;
+      });
+    }
     _loadStats();
   }
 
@@ -65,6 +76,32 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Board Theme',
+            icon: const Icon(
+              Icons.palette_outlined,
+              color: Color(0xFF38BDF8),
+              size: 22,
+            ),
+            onPressed: () => ChessboardWidget.showThemePicker(context),
+          ),
+          IconButton(
+            tooltip: _soundEnabled ? 'Mute Sound' : 'Unmute Sound',
+            icon: Icon(
+              _soundEnabled ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+              color: _soundEnabled ? const Color(0xFF38BDF8) : Colors.grey,
+              size: 22,
+            ),
+            onPressed: () async {
+              final next = !_soundEnabled;
+              await _audioService.toggleSound(next);
+              if (mounted) {
+                setState(() {
+                  _soundEnabled = next;
+                });
+              }
+            },
+          ),
           FutureBuilder<int>(
             future: _storageService.getRemainingEnergy(),
             builder: (context, snapshot) {
@@ -96,7 +133,6 @@ class _HomeScreenState extends State<HomeScreen> {
               );
             },
           ),
-
         ],
       ),
 
@@ -126,7 +162,6 @@ class _HomeScreenState extends State<HomeScreen> {
                             blurRadius: 10,
                             offset: const Offset(0, 4),
                           ),
-
                         ],
                       ),
                       child: Row(
@@ -139,7 +174,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(content: Text('🔥 You are on a ${_stats.streakDays}-day streak! Keep training today!')),
                                 );
-                              } else {
+                              } else if (_stats.canRestoreStreak) {
                                 showDialog(
                                   context: context,
                                   builder: (ctx) => AlertDialog(
@@ -166,11 +201,20 @@ class _HomeScreenState extends State<HomeScreen> {
                                                 SnackBar(content: Text('🔥 Streak Restored ($restored Days)! Awesome!')),
                                               );
                                             },
+                                            onAdFailed: () {
+                                              messenger.showSnackBar(
+                                                const SnackBar(content: Text('Ad not ready yet. Please try again in a moment.')),
+                                              );
+                                            },
                                           );
                                         },
                                       ),
                                     ],
                                   ),
+                                );
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('🔥 Complete a training session today to start your daily streak!')),
                                 );
                               }
                             },

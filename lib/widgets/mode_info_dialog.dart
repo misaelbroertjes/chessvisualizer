@@ -29,9 +29,9 @@ class ModeInfoDialog extends StatelessWidget {
         rules: [
           '⚡ Costs 1 Energy per 60-second speed training session.',
           'Tap the square on the board that matches the target coordinate prompt.',
-          'Penalty Mode: Removes 1 second for every incorrect tap.',
+          'Penalty Mode: Removes 5 seconds for every incorrect tap.',
           'Sudden Death: Ends session immediately on a single mistake.',
-          'Board View: Practice with White, Black, or Random orientation.',
+          'Board View: Practice with White, Black, or Random orientation, and toggle coordinate labels.',
         ],
         tips: [
           'Anchor your vision: Remember corner squares (a1, a8, h1, h8) and central squares (d4, d5, e4, e5).',
