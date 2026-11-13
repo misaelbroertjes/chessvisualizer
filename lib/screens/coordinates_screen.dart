@@ -146,7 +146,12 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
     });
 
     _storageService.saveCoordsHighScore(_score);
-    _storageService.recordActivity(_score > 0, updatePuzzleStats: false);
+    if (_score > 0) {
+      _storageService.recordModeTraining(
+        xpEarned: max(5, _score),
+        updateDailyStreak: true,
+      );
+    }
   }
 
   void _handleSquareTap(String square) {
@@ -226,10 +231,13 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
         ],
       ),
 
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
+      body: SafeArea(
+        top: false,
+        bottom: true,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16.0, 14.0, 16.0, 32.0),
+          child: Column(
+            children: [
             if (_isPlaying) ...[
               // Prompt & Timer
               Container(
@@ -436,6 +444,7 @@ class _CoordinatesScreenState extends State<CoordinatesScreen> {
             ],
           ],
         ),
+      ),
       ),
     );
   }

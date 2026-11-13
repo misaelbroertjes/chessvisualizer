@@ -125,60 +125,68 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
     }
 
     final random = Random();
-    int attempts = 0;
 
-    do {
-      attempts++;
-      final startIdx = random.nextInt(allSquares.length);
-      int targetIdx = random.nextInt(allSquares.length);
-      while (targetIdx == startIdx) {
-        targetIdx = random.nextInt(allSquares.length);
-      }
+    // Pick start and target squares at least 2 knight moves apart
+    final startIdx = random.nextInt(allSquares.length);
+    _knightSquare = allSquares[startIdx];
+    _initialKnightSquare = _knightSquare;
 
-      _knightSquare = allSquares[startIdx];
-      _initialKnightSquare = _knightSquare;
-      _targetSquare = allSquares[targetIdx];
-      _movesCount = 0;
-      _dangerHintCount = 0;
-      _isCompleted = false;
-      _isFailed = false;
-      _errorSquares.clear();
-      _greenHighlights.clear();
+    final immediateJumps = _getKnightMoves(_knightSquare).toSet();
+    final validTargets = allSquares
+        .where((sq) => sq != _knightSquare && !immediateJumps.contains(sq))
+        .toList();
+    _targetSquare = validTargets[random.nextInt(validTargets.length)];
 
-      // Enemy piece scaling: 0 at Level 1-2, +1 every 2 levels (max 8)
-      final numEnemies = min(8, max(0, (_level - 1) ~/ 2));
-      _enemyPieces.clear();
-      final potential = allSquares.where((s) => s != _knightSquare && s != _targetSquare).toList();
-      potential.shuffle();
+    _movesCount = 0;
+    _dangerHintCount = 0;
+    _isCompleted = false;
+    _isFailed = false;
+    _errorSquares.clear();
+    _greenHighlights.clear();
 
-      final enemyTypes = ['bB', 'bR', 'bQ'];
-      for (int i = 0; i < numEnemies && i < potential.length; i++) {
-        final sq = potential[i];
-        final piece = enemyTypes[random.nextInt(enemyTypes.length)];
+    // Constructive enemy placement: place up to numEnemies pieces one by one,
+    // keeping each piece ONLY if start & target remain safe AND a valid path exists.
+    final numEnemies = min(8, max(0, (_level - 1) ~/ 2));
+    _enemyPieces.clear();
+    _initialEnemyPieces.clear();
+
+    final potential =
+        allSquares.where((s) => s != _knightSquare && s != _targetSquare).toList()
+          ..shuffle(random);
+
+    for (final sq in potential) {
+      if (_enemyPieces.length >= numEnemies) break;
+
+      final candidateTypes = ['bB', 'bR', 'bQ']..shuffle(random);
+      bool placedOnSq = false;
+
+      for (final piece in candidateTypes) {
         _enemyPieces[sq] = piece;
+        _initialEnemyPieces
+          ..clear()
+          ..addAll(_enemyPieces);
+        _recalculateControlledSquares();
+
+        if (!_controlledSquares.contains(_knightSquare) &&
+            !_controlledSquares.contains(_targetSquare)) {
+          final pathLen = _findShortestPathLength();
+          if (pathLen != null && pathLen > 0) {
+            placedOnSq = true;
+            break;
+          }
+        }
       }
 
-      _initialEnemyPieces.clear();
-      _initialEnemyPieces.addAll(_enemyPieces);
-
-      _recalculateControlledSquares();
-      _minMoves = _findShortestPathLength() ?? 0;
-
-      // Ensure start & target squares are NOT in danger zone and shortest path exists
-    } while ((_controlledSquares.contains(_knightSquare) ||
-            _controlledSquares.contains(_targetSquare) ||
-            _minMoves == 0) &&
-        attempts < 80);
-
-    // Fallback safety if attempts exceeded
-    if (_controlledSquares.contains(_targetSquare)) {
-      _controlledSquares.remove(_targetSquare);
+      if (!placedOnSq) {
+        _enemyPieces.remove(sq);
+      }
     }
 
-    // Save initial state for Reset Route
-    _initialKnightSquare = _knightSquare;
-    _initialEnemyPieces.clear();
-    _initialEnemyPieces.addAll(Map<String, String>.from(_enemyPieces));
+    _initialEnemyPieces
+      ..clear()
+      ..addAll(_enemyPieces);
+    _recalculateControlledSquares();
+    _minMoves = _findShortestPathLength() ?? 2;
 
     if (!mounted) return;
     setState(() {
@@ -381,7 +389,6 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
 
     if (_controlledSquares.contains(to)) {
       _audioService.playError();
-      _storageService.recordActivity(false, updatePuzzleStats: false);
       _failedAtLevel = _level;
       _storageService.savePathfinderLevel(1);
       _storageService.consumeEnergy().then((hasEnergy) {
@@ -437,7 +444,6 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
       if (stars <= 0) {
         // Route failed because player took too many extra moves or hints!
         _audioService.playError();
-        _storageService.recordActivity(false, updatePuzzleStats: false);
         _failedAtLevel = _level;
         _storageService.savePathfinderLevel(1);
         _storageService.consumeEnergy().then((hasEnergy) {
@@ -460,7 +466,10 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
           _level++;
         });
         _storageService.savePathfinderLevel(_level);
-        _storageService.recordActivity(true);
+        _storageService.recordModeTraining(
+          xpEarned: stars * 5,
+          updateDailyStreak: true,
+        );
       }
     }
   }
@@ -536,10 +545,13 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
         ],
       ),
 
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
+      body: SafeArea(
+        top: false,
+        bottom: true,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16.0, 14.0, 16.0, 32.0),
+          child: Column(
+            children: [
             // Level & Target Info Bar
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -804,6 +816,7 @@ class _PathfinderScreenState extends State<PathfinderScreen> {
             ],
           ],
         ),
+      ),
       ),
     );
   }

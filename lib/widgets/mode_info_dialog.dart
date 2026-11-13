@@ -79,14 +79,38 @@ class ModeInfoDialog extends StatelessWidget {
         rules: [
           '⚡ Energy Rule: Calculating moves in your head, switching depth, loading puzzles, and solving correctly costs 0 Energy (FREE!).',
           '❌ Wrong Move (-1⚡): Making an incorrect move attempt on the board costs 1 Energy.',
-          'Visualization Depth: Choose 1, 2, 3, 4, or 5 moves to calculate in your head before executing the winning move.',
-          'Forcing Tactics: Puzzles are filtered for high quality (Rating 1300+).',
+          'Visualization Depth: Choose 1 to 10 moves in your head, or even Full Game (From Move 1)!',
+          'Difficulty & ELO: Auto-matched to your ELO with a recommended tier. Choosing a tier below your recommendation switches to Unrated Mode.',
           '👁️ Eye Icon (Visual Aid): Toggle ghost dots on pieces moving in the mental sequence.',
           '⏪ Replay Bar: Inspect full step-by-step solutions after completing a puzzle.',
         ],
         tips: [
           'Do not rush: Mentally verify the final position before touching a piece on the board.',
-          'Try increasing Visualization Depth up to 4 or 5 moves as your mental vision improves!',
+          'For 6+ moves or Full Game mode, use the Mental Step Pacer (< / >) to step through the notation at your own pace!',
+        ],
+      ),
+    );
+  }
+
+  static Future<void> showWoodpeckerInfo(BuildContext context) {
+    return showDialog(
+      context: context,
+      builder: (_) => const ModeInfoDialog(
+        title: 'Woodpecker Rush',
+        icon: '🐦',
+        objectives: [
+          'Inspired by the classic Woodpecker training method: build rapid tactical pattern recognition by repeating a fixed set of puzzles across multiple cycles.',
+          'First complete Cycle #1 to establish your baseline time, then choose your Target Time and beat it with 0 mistakes!',
+        ],
+        rules: [
+          '⏱️ Step 1 (Baseline): Solve your chosen set of puzzles once in Cycle #1 to see your natural solving time.',
+          '🎯 Step 2 (Target Time): Pick your Target Time (e.g. -20%, -35%, or Half Time) and repeat the shuffled set.',
+          '🧠 Mistake Review: Missed a puzzle? Practice just your missed puzzles right after a cycle before starting the next run!',
+          '✅ Mastering a Set: Unlock the next set when you complete a cycle with 0 mistakes AND within your Target Time.',
+        ],
+        tips: [
+          'In Cycle 1, take your time to understand each tactical motif.',
+          'Watch your cycle times drop dramatically in Cycles 2, 3, and 4!',
         ],
       ),
     );

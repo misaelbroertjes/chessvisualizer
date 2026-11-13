@@ -37,7 +37,7 @@ void main() {
     expect(find.text('8'), findsNothing);
   });
 
-  test('StorageService tracks energy and protects active streaks', () async {
+  test('StorageService tracks energy, realistic ELO, and monthly XP', () async {
     SharedPreferences.setMockInitialValues({});
     final storage = StorageService();
 
@@ -48,11 +48,32 @@ void main() {
     expect(consumed, isTrue);
     expect(await storage.getRemainingEnergy(), 9);
 
-    await storage.recordActivity(true);
-    final stats = await storage.loadUserStats();
+    final deltaWin = await storage.recordRatedPuzzleSuccess(
+      puzzleRating: 1200,
+      visualizationDepth: 1,
+    );
+    expect(deltaWin, 14);
+    var stats = await storage.loadUserStats();
     expect(stats.streakDays, 1);
     expect(stats.totalPuzzlesSolved, 1);
-    expect(stats.eloRating, 1212);
+    expect(stats.eloRating, 1214);
+    expect(stats.monthlyXp, greaterThan(0));
+
+    // Mistake deducts ELO and subsequent completion does not add ELO back
+    final deltaLoss = await storage.recordRatedPuzzleMistake(
+      puzzleRating: 1214,
+      visualizationDepth: 1,
+    );
+    expect(deltaLoss, -14);
+    await storage.recordPuzzleCompletionWithoutElo(xpEarned: 8, countAttempt: false);
+    stats = await storage.loadUserStats();
+    expect(stats.eloRating, 1200);
+    expect(stats.totalPuzzlesSolved, 2);
+
+    // Non-ELO modes (Coordinates / Pathfinder) award XP without altering ELO
+    await storage.recordModeTraining(xpEarned: 20);
+    stats = await storage.loadUserStats();
+    expect(stats.eloRating, 1200);
 
     await storage.saveBoardTheme('green');
     expect(await storage.loadBoardTheme(), 'green');

@@ -6,6 +6,8 @@ class UserStats {
   int totalPuzzlesSolved;
   int totalAttempts;
   int eloRating;
+  int monthlyXp;
+  int woodpeckerSetsCompleted;
   bool canRestoreStreak;
 
   UserStats({
@@ -16,6 +18,8 @@ class UserStats {
     this.totalPuzzlesSolved = 0,
     this.totalAttempts = 0,
     this.eloRating = 1200,
+    this.monthlyXp = 0,
+    this.woodpeckerSetsCompleted = 0,
     this.canRestoreStreak = false,
   });
 

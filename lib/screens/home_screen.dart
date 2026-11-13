@@ -4,11 +4,13 @@ import '../services/storage_service.dart';
 import '../services/puzzle_service.dart';
 import '../services/ad_service.dart';
 import '../services/audio_service.dart';
+import '../services/leaderboard_service.dart';
 import '../widgets/chessboard_widget.dart';
 import 'stepback_screen.dart';
 import 'pathfinder_screen.dart';
 import 'coordinates_screen.dart';
-
+import 'woodpecker_screen.dart';
+import 'leaderboard_screen.dart';
 import '../widgets/mode_info_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -18,12 +20,12 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-
 class _HomeScreenState extends State<HomeScreen> {
   final StorageService _storageService = StorageService();
   final PuzzleService _puzzleService = PuzzleService();
   final AdService _adService = AdService();
   final AudioService _audioService = AudioService();
+  final LeaderboardService _leaderboardService = LeaderboardService();
 
   UserStats _stats = UserStats();
   bool _isLoading = true;
@@ -39,6 +41,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await _audioService.initialize();
     await _storageService.loadBoardTheme();
     await _puzzleService.loadPuzzles();
+    await _leaderboardService.initialize();
     await _adService.initialize();
     if (mounted) {
       setState(() {
@@ -76,6 +79,20 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Clubs & Leaderboard',
+            icon: const Icon(
+              Icons.emoji_events_outlined,
+              color: Color(0xFFF59E0B),
+              size: 22,
+            ),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const LeaderboardScreen()),
+              ).then((_) => _loadStats());
+            },
+          ),
           IconButton(
             tooltip: 'Board Theme',
             icon: const Icon(
@@ -135,15 +152,17 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-
       body: _isLoading
           ? const Center(child: CircularProgressIndicator(color: Color(0xFF6366F1)))
-          : RefreshIndicator(
-              onRefresh: () async => _loadStats(),
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(16.0),
-                physics: const AlwaysScrollableScrollPhysics(),
-                child: Column(
+          : SafeArea(
+              top: false,
+              bottom: true,
+              child: RefreshIndicator(
+                onRefresh: () async => _loadStats(),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 32.0),
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // Stats & Daily Streak Banner
@@ -164,110 +183,244 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         ],
                       ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      child: Column(
                         children: [
-                          // Streak
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                            children: [
+                              // Streak
+                              InkWell(
+                                onTap: () {
+                                  if (_stats.streakDays > 0) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          '🔥 You are on a ${_stats.streakDays}-day streak! Keep training today!',
+                                        ),
+                                      ),
+                                    );
+                                  } else if (_stats.canRestoreStreak) {
+                                    showDialog(
+                                      context: context,
+                                      builder: (ctx) => AlertDialog(
+                                        backgroundColor: const Color(0xFF1E293B),
+                                        title: const Text(
+                                          '🔥 Restore Streak',
+                                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                        ),
+                                        content: const Text(
+                                          'Did you miss a day? Watch a short ad to restore your daily streak!',
+                                          style: TextStyle(color: Colors.white70),
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(ctx),
+                                            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                                          ),
+                                          ElevatedButton.icon(
+                                            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFF59E0B)),
+                                            icon: const Icon(Icons.play_circle_fill, color: Colors.white),
+                                            label: const Text(
+                                              'Restore (Ad)',
+                                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                            ),
+                                            onPressed: () {
+                                              final messenger = ScaffoldMessenger.of(context);
+                                              Navigator.pop(ctx);
+                                              _adService.showRewardedAd(
+                                                onUserEarnedReward: () async {
+                                                  final restored = await _storageService.restoreStreak();
+                                                  _loadStats();
+                                                  messenger.showSnackBar(
+                                                    SnackBar(
+                                                      content: Text('🔥 Streak Restored ($restored Days)! Awesome!'),
+                                                    ),
+                                                  );
+                                                },
+                                                onAdFailed: () {
+                                                  messenger.showSnackBar(
+                                                    const SnackBar(
+                                                      content: Text('Ad not ready yet. Please try again in a moment.'),
+                                                    ),
+                                                  );
+                                                },
+                                              );
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  } else {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          '🔥 Complete a training session today to start your daily streak!',
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                },
+                                child: Column(
+                                  children: [
+                                    const Text(
+                                      '🔥 Streak',
+                                      style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '${_stats.streakDays} Days',
+                                      style: TextStyle(
+                                        color: _stats.streakDays > 0 ? const Color(0xFFF59E0B) : Colors.grey,
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 18,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Container(height: 30, width: 1, color: Colors.white24),
+                              // Rating
+                              Column(
+                                children: [
+                                  const Text(
+                                    '⭐ Rating',
+                                    style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '${_stats.eloRating}',
+                                    style: const TextStyle(
+                                      color: Color(0xFF38BDF8),
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 18,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              Container(height: 30, width: 1, color: Colors.white24),
+                              // Monthly XP
+                              InkWell(
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(builder: (_) => const LeaderboardScreen()),
+                                  ).then((_) => _loadStats());
+                                },
+                                child: Column(
+                                  children: [
+                                    const Text(
+                                      '🏆 Monthly XP',
+                                      style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '${_stats.monthlyXp} XP',
+                                      style: const TextStyle(
+                                        color: Color(0xFF10B981),
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 18,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          // Club & Leaderboard Quick Banner
                           InkWell(
                             onTap: () {
-                              if (_stats.streakDays > 0) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('🔥 You are on a ${_stats.streakDays}-day streak! Keep training today!')),
-                                );
-                              } else if (_stats.canRestoreStreak) {
-                                showDialog(
-                                  context: context,
-                                  builder: (ctx) => AlertDialog(
-                                    backgroundColor: const Color(0xFF1E293B),
-                                    title: const Text('🔥 Restore Streak', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                                    content: const Text('Did you miss a day? Watch a short ad to restore your daily streak!', style: TextStyle(color: Colors.white70)),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () => Navigator.pop(ctx),
-                                        child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-                                      ),
-                                      ElevatedButton.icon(
-                                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFF59E0B)),
-                                        icon: const Icon(Icons.play_circle_fill, color: Colors.white),
-                                        label: const Text('Restore (Ad)', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                                        onPressed: () {
-                                          final messenger = ScaffoldMessenger.of(context);
-                                          Navigator.pop(ctx);
-                                          _adService.showRewardedAd(
-                                            onUserEarnedReward: () async {
-                                              final restored = await _storageService.restoreStreak();
-                                              _loadStats();
-                                              messenger.showSnackBar(
-                                                SnackBar(content: Text('🔥 Streak Restored ($restored Days)! Awesome!')),
-                                              );
-                                            },
-                                            onAdFailed: () {
-                                              messenger.showSnackBar(
-                                                const SnackBar(content: Text('Ad not ready yet. Please try again in a moment.')),
-                                              );
-                                            },
-                                          );
-                                        },
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(builder: (_) => const LeaderboardScreen()),
+                              ).then((_) => _loadStats());
+                            },
+                            borderRadius: BorderRadius.circular(10),
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF0F172A).withValues(alpha: 0.6),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.4)),
+                              ),
+                              child: const Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(Icons.emoji_events, color: Color(0xFFF59E0B), size: 18),
+                                      SizedBox(width: 8),
+                                      Text(
+                                        'Chess Clubs & Monthly Leaderboard',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12,
+                                        ),
                                       ),
                                     ],
                                   ),
-                                );
-                              } else {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('🔥 Complete a training session today to start your daily streak!')),
-                                );
-                              }
-                            },
-                            child: Column(
-                              children: [
-                                const Text('🔥 Streak', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
-                                const SizedBox(height: 4),
-                                Text('${_stats.streakDays} Days', style: TextStyle(color: _stats.streakDays > 0 ? const Color(0xFFF59E0B) : Colors.grey, fontWeight: FontWeight.w800, fontSize: 20)),
-                              ],
+                                  Icon(Icons.chevron_right, color: Color(0xFFF59E0B), size: 18),
+                                ],
+                              ),
                             ),
-                          ),
-
-                          Container(height: 30, width: 1, color: Colors.white24),
-                          // Rating
-                          Column(
-                            children: [
-                              const Text('⭐ Rating', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
-                              const SizedBox(height: 4),
-                              Text('${_stats.eloRating}', style: const TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.w800, fontSize: 20)),
-                            ],
-                          ),
-                          Container(height: 30, width: 1, color: Colors.white24),
-                          // Solved
-                          Column(
-                            children: [
-                              const Text('🎯 Solved', style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
-                              const SizedBox(height: 4),
-                              Text('${_stats.totalPuzzlesSolved}', style: const TextStyle(color: Color(0xFF10B981), fontWeight: FontWeight.w800, fontSize: 20)),
-                            ],
                           ),
                         ],
                       ),
                     ),
 
-                    const SizedBox(height: 24),
-                    const Text('TRAINING MODES', style: TextStyle(color: Color(0xFF94A3B8), fontWeight: FontWeight.bold, fontSize: 12, letterSpacing: 1.2)),
+                    const SizedBox(height: 22),
+                    const Text(
+                      'TRAINING MODES',
+                      style: TextStyle(
+                        color: Color(0xFF94A3B8),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
                     const SizedBox(height: 12),
 
                     // Mode 1: Stepback
                     _buildModeCard(
                       title: 'Puzzle Stepback',
-                      description: 'Calculate tactical puzzle sequences in your head before executing moves.',
+                      description: 'Calculate 1 to 10 moves (or Full Game!) in your head before executing moves.',
                       icon: Icons.replay,
                       color: const Color(0xFF6366F1),
+                      badgeText: 'ELO ${_stats.eloRating}',
                       onInfoTap: () => ModeInfoDialog.showStepbackInfo(context),
                       onTap: () {
-                        Navigator.push(context, MaterialPageRoute(builder: (_) => const StepbackScreen())).then((_) => _loadStats());
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const StepbackScreen()),
+                        ).then((_) => _loadStats());
                       },
                     ),
 
                     const SizedBox(height: 14),
 
-                    // Mode 2: Knight Pathfinder
+                    // Mode 2: Woodpecker Rush (NEW!)
+                    _buildModeCard(
+                      title: 'Woodpecker Rush',
+                      description: 'Solve a set once to set your baseline, then repeat it faster & faster to beat your Target Time with 0 mistakes!',
+                      icon: Icons.repeat_rounded,
+                      color: const Color(0xFFEC4899),
+                      badgeText: _stats.woodpeckerSetsCompleted > 0
+                          ? '${_stats.woodpeckerSetsCompleted} Sets 🏆'
+                          : 'NEW',
+                      onInfoTap: () => ModeInfoDialog.showWoodpeckerInfo(context),
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const WoodpeckerScreen()),
+                        ).then((_) => _loadStats());
+                      },
+                    ),
+
+                    const SizedBox(height: 14),
+
+                    // Mode 3: Knight Pathfinder
                     _buildModeCard(
                       title: 'Knight Pathfinder',
                       description: 'Guide knight safely to target square avoiding ray threats.',
@@ -276,13 +429,16 @@ class _HomeScreenState extends State<HomeScreen> {
                       badgeText: 'Level ${_stats.pathfinderLevel}',
                       onInfoTap: () => ModeInfoDialog.showPathfinderInfo(context),
                       onTap: () {
-                        Navigator.push(context, MaterialPageRoute(builder: (_) => const PathfinderScreen())).then((_) => _loadStats());
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const PathfinderScreen()),
+                        ).then((_) => _loadStats());
                       },
                     ),
 
                     const SizedBox(height: 14),
 
-                    // Mode 3: Coordinates Trainer
+                    // Mode 4: Coordinates Trainer
                     _buildModeCard(
                       title: 'Coordinates Trainer',
                       description: 'Find coordinates fast in 60s. Train blind board sight.',
@@ -291,12 +447,16 @@ class _HomeScreenState extends State<HomeScreen> {
                       badgeText: 'Best: ${_stats.coordinatesHighScore}',
                       onInfoTap: () => ModeInfoDialog.showCoordinatesInfo(context),
                       onTap: () {
-                        Navigator.push(context, MaterialPageRoute(builder: (_) => const CoordinatesScreen())).then((_) => _loadStats());
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => const CoordinatesScreen()),
+                        ).then((_) => _loadStats());
                       },
                     ),
                   ],
                 ),
               ),
+            ),
             ),
     );
   }
@@ -341,7 +501,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       Expanded(
                         child: Text(
                           title,
-                          style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Colors.white),
+                          style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
                         ),
                       ),
                       if (badgeText != null)
@@ -352,7 +516,10 @@ class _HomeScreenState extends State<HomeScreen> {
                             color: color.withValues(alpha: 0.2),
                             borderRadius: BorderRadius.circular(8),
                           ),
-                          child: Text(badgeText, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold)),
+                          child: Text(
+                            badgeText,
+                            style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold),
+                          ),
                         ),
                       if (onInfoTap != null)
                         InkWell(
@@ -360,13 +527,20 @@ class _HomeScreenState extends State<HomeScreen> {
                           borderRadius: BorderRadius.circular(20),
                           child: Padding(
                             padding: const EdgeInsets.all(4.0),
-                            child: Icon(Icons.info_outline, color: color.withValues(alpha: 0.8), size: 20),
+                            child: Icon(
+                              Icons.info_outline,
+                              color: color.withValues(alpha: 0.8),
+                              size: 20,
+                            ),
                           ),
                         ),
                     ],
                   ),
                   const SizedBox(height: 4),
-                  Text(description, style: const TextStyle(color: Colors.white70, fontSize: 12, height: 1.3)),
+                  Text(
+                    description,
+                    style: const TextStyle(color: Colors.white70, fontSize: 12, height: 1.3),
+                  ),
                 ],
               ),
             ),
@@ -376,4 +550,3 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 }
-

@@ -6,9 +6,7 @@ import '../services/puzzle_service.dart';
 import '../services/storage_service.dart';
 import '../services/audio_service.dart';
 import '../widgets/chessboard_widget.dart';
-
 import '../widgets/energy_dialog.dart';
-
 import '../widgets/mode_info_dialog.dart';
 
 class StepbackScreen extends StatefulWidget {
@@ -18,7 +16,6 @@ class StepbackScreen extends StatefulWidget {
   State<StepbackScreen> createState() => _StepbackScreenState();
 }
 
-
 class _StepbackScreenState extends State<StepbackScreen> {
   final PuzzleService _puzzleService = PuzzleService();
   final StorageService _storageService = StorageService();
@@ -26,7 +23,12 @@ class _StepbackScreenState extends State<StepbackScreen> {
   final ScrollController _scrollController = ScrollController();
 
   Puzzle? _currentPuzzle;
-  int _visualizationDepth = 1; // 1, 2, 3, 4, or 5 moves in head
+  int _visualizationDepth = 1; // 1, 2, 3, 4, 5, 7, 10, or 999 (Full Game)
+  String _selectedDifficulty = 'auto'; // 'auto', 'easy', 'medium', 'hard', 'master'
+  int _userElo = 1200;
+  bool _isRatedPuzzle = true;
+  int? _lastEloDelta;
+
   bool _visualAid = false;
   String _gameState = 'solving'; // 'solving', 'opponent_moving', 'feedback'
 
@@ -40,6 +42,10 @@ class _StepbackScreenState extends State<StepbackScreen> {
   final List<Map<String, dynamic>> _setupReplaySteps = [];
   String? _originSquareOfFirstMove;
   bool _recordedMistakeForCurrentPuzzle = false;
+  bool _solutionWasRevealed = false;
+
+  // Mental Pacer index for deep visualization (6+ moves or Full Game)
+  int _mentalPacerIndex = 0;
 
   Set<String> _selectedSquares = {};
   Set<String> _greenHighlights = {};
@@ -79,7 +85,14 @@ class _StepbackScreenState extends State<StepbackScreen> {
     final stats = await _storageService.loadUserStats();
     if (!mounted) return;
 
+    final isBelowRec =
+        PuzzleService.isTierBelowRecommended(_selectedDifficulty, stats.eloRating);
+    final filter = PuzzleService.getFilterForTier(_selectedDifficulty, stats.eloRating);
+
     setState(() {
+      _userElo = stats.eloRating;
+      _isRatedPuzzle = !isBelowRec;
+      _lastEloDelta = null;
       _gameState = 'solving';
       _selectedSquares.clear();
       _greenHighlights.clear();
@@ -88,18 +101,22 @@ class _StepbackScreenState extends State<StepbackScreen> {
       _historyStates.clear();
       _setupReplaySteps.clear();
       _historyIndex = 0;
+      _mentalPacerIndex = 0;
       _originSquareOfFirstMove = null;
       _recordedMistakeForCurrentPuzzle = false;
+      _solutionWasRevealed = false;
     });
 
-    final minRating = (stats.eloRating - 350).clamp(800, 2200);
-    final maxRating = (stats.eloRating + 450).clamp(1300, 2800);
+    final bool isFullGame = _visualizationDepth >= 100;
+    final int minPreMoves = isFullGame ? 6 : (_visualizationDepth - 1);
+    final int? maxPly = isFullGame ? 30 : null;
 
     final puzzle = _puzzleService.getRandomPuzzle(
-      forcingOnly: true,
-      minRating: minRating,
-      maxRating: maxRating,
-      minPreMoves: _visualizationDepth - 1,
+      forcingOnly: filter.forcingOnly,
+      minRating: filter.minRating,
+      maxRating: filter.maxRating,
+      minPreMoves: minPreMoves,
+      maxPly: maxPly,
     );
 
     if (puzzle == null) return;
@@ -118,7 +135,6 @@ class _StepbackScreenState extends State<StepbackScreen> {
 
   String _formatSAN(chess_lib.Chess game, String moveStr) {
     if (moveStr.isEmpty) return moveStr;
-    // If moveStr is already SAN (like "Nf3", "O-O", "e4", "Bxc5"), return it directly
     if (!RegExp(r'^[a-h][1-8][a-h][1-8]').hasMatch(moveStr)) {
       return moveStr;
     }
@@ -132,7 +148,6 @@ class _StepbackScreenState extends State<StepbackScreen> {
 
     final type = piece.type.name.toUpperCase();
 
-    // Castling
     if (type == 'K') {
       if ((from == 'e1' && to == 'g1') || (from == 'e8' && to == 'g8')) return 'O-O';
       if ((from == 'e1' && to == 'c1') || (from == 'e8' && to == 'c8')) return 'O-O-O';
@@ -232,11 +247,11 @@ class _StepbackScreenState extends State<StepbackScreen> {
     _pieceMarkers.clear();
     _setupReplaySteps.clear();
 
-    final int targetHeadMoves = _visualizationDepth; // e.g., 1, 2, 3, 4, 5
-    final int preMovesNeeded = targetHeadMoves - 1; // e.g., 0, 1, 2, 3, 4
-
     final int totalPly = puzzle.ply;
     final List<String> gameMoves = puzzle.gameMoves;
+
+    final bool isFullGame = _visualizationDepth >= 100;
+    final int preMovesNeeded = isFullGame ? totalPly : (_visualizationDepth - 1);
 
     int startPly = totalPly - preMovesNeeded;
     if (startPly < 0) startPly = 0;
@@ -261,7 +276,6 @@ class _StepbackScreenState extends State<StepbackScreen> {
       for (final sq in _boardPosition.keys) sq: sq,
     };
 
-    // Track move simulation state to generate SAN labels for movesTable
     final simGame = chess_lib.Chess.fromFEN(_activeGame.generate_fen());
     int moveNo = 1;
 
@@ -269,13 +283,17 @@ class _StepbackScreenState extends State<StepbackScreen> {
     if (preMovesNeeded > 0 && gameMoves.isNotEmpty && gameMoves.length >= totalPly) {
       for (int i = startPly; i < totalPly; i++) {
         final m = gameMoves[i];
+        final isWhiteTurn = simGame.turn == chess_lib.Color.WHITE;
+        final chessMoveNum = (i ~/ 2) + 1;
         final sanMove = _formatSAN(simGame, m);
         _recordMentalStepOnSim(simGame, m, originOfSquare, 'Setup Move $moveNo');
 
         _movesTable.add({
           'moveNo': '$moveNo',
+          'chessNotation': isWhiteTurn ? '$chessMoveNum. $sanMove' : '$chessMoveNum... $sanMove',
           'move': sanMove,
-          'label': 'Setup Move (in head)'
+          'side': isWhiteTurn ? 'White' : 'Black',
+          'label': 'Setup Move (in head)',
         });
         moveNo++;
       }
@@ -284,13 +302,16 @@ class _StepbackScreenState extends State<StepbackScreen> {
       int takePreMoves = preMoves.length >= preMovesNeeded ? preMovesNeeded : preMoves.length;
       for (int i = 0; i < takePreMoves; i++) {
         final pm = preMoves[preMoves.length - takePreMoves + i];
+        final isWhiteTurn = simGame.turn == chess_lib.Color.WHITE;
         final sanPM = _formatSAN(simGame, pm);
         _recordMentalStepOnSim(simGame, pm, originOfSquare, 'Setup Move $moveNo');
 
         _movesTable.add({
           'moveNo': '$moveNo',
+          'chessNotation': sanPM,
           'move': sanPM,
-          'label': 'Setup Move (in head)'
+          'side': isWhiteTurn ? 'White' : 'Black',
+          'label': 'Setup Move (in head)',
         });
         moveNo++;
       }
@@ -299,13 +320,17 @@ class _StepbackScreenState extends State<StepbackScreen> {
     // 2. Add the Opponent Blunder move (solutionMoves[0])
     if (_solutionMoves.isNotEmpty) {
       final blunder = _solutionMoves[0];
+      final isWhiteTurn = simGame.turn == chess_lib.Color.WHITE;
+      final chessMoveNum = (totalPly ~/ 2) + 1;
       final sanBlunder = _formatSAN(simGame, blunder);
-      _recordMentalStepOnSim(simGame, blunder, originOfSquare, 'Opponent Move');
+      _recordMentalStepOnSim(simGame, blunder, originOfSquare, 'Opponent Blunder');
 
       _movesTable.add({
         'moveNo': '$moveNo',
+        'chessNotation': isWhiteTurn ? '$chessMoveNum. $sanBlunder' : '$chessMoveNum... $sanBlunder',
         'move': sanBlunder,
-        'label': 'Opponent Move (in head)'
+        'side': isWhiteTurn ? 'White' : 'Black',
+        'label': 'Opponent Blunder (in head)',
       });
     }
 
@@ -315,6 +340,7 @@ class _StepbackScreenState extends State<StepbackScreen> {
       _pieceMarkers.add(_originSquareOfFirstMove!);
     }
 
+    _mentalPacerIndex = 0;
     setState(() {});
   }
 
@@ -344,10 +370,13 @@ class _StepbackScreenState extends State<StepbackScreen> {
     final expectedMove = _solutionMoves[_stepIndex];
     final expectedFrom = expectedMove.length >= 4 ? expectedMove.substring(0, 2) : '';
     final expectedTo = expectedMove.length >= 4 ? expectedMove.substring(2, 4) : '';
+    final playerPrefix = _playerColor == 'white' ? 'w' : 'b';
 
     if (_selectedSquares.isEmpty) {
-      // Allow selecting any square with a visible piece OR the mental expectedFrom square
-      if (_boardPosition.containsKey(square) || (_stepIndex == 1 && square == expectedFrom)) {
+      // On Step 1 (blindfold/mental position), allow selecting ANY square on the board
+      // because the piece in your head may stand on a square that is visibly empty!
+      // On follow-up steps (_stepIndex > 1), the board is live so select own pieces.
+      if (_stepIndex == 1 || _boardPosition[square]?.startsWith(playerPrefix) == true) {
         setState(() {
           _selectedSquares = {square};
         });
@@ -358,7 +387,6 @@ class _StepbackScreenState extends State<StepbackScreen> {
     final from = _selectedSquares.first;
     final to = square;
 
-    // Tapping the same square deselects without costing energy
     if (from == to) {
       setState(() {
         _selectedSquares.clear();
@@ -366,8 +394,6 @@ class _StepbackScreenState extends State<StepbackScreen> {
       return;
     }
 
-    // In live board follow-up steps (_stepIndex > 1), tapping another own piece switches selection
-    final playerPrefix = _playerColor == 'white' ? 'w' : 'b';
     if (_stepIndex > 1 &&
         _boardPosition[to]?.startsWith(playerPrefix) == true &&
         to != expectedTo) {
@@ -377,7 +403,6 @@ class _StepbackScreenState extends State<StepbackScreen> {
       return;
     }
 
-    // Ensure the user has energy before evaluating a move attempt
     final currentEnergy = await _storageService.getRemainingEnergy();
     if (!mounted) return;
     if (currentEnergy <= 0) {
@@ -392,7 +417,9 @@ class _StepbackScreenState extends State<StepbackScreen> {
 
     final bool isCorrect = to == expectedTo &&
         (from == expectedFrom ||
-            (_stepIndex == 1 && _originSquareOfFirstMove != null && from == _originSquareOfFirstMove));
+            (_stepIndex == 1 &&
+                _originSquareOfFirstMove != null &&
+                from == _originSquareOfFirstMove));
 
     if (isCorrect) {
       if (_stepIndex == 1) {
@@ -426,7 +453,6 @@ class _StepbackScreenState extends State<StepbackScreen> {
         }
       }
 
-      // Check if there is a follow-up opponent response + next player move in the solution
       if (_stepIndex + 2 < _solutionMoves.length) {
         setState(() {
           _greenHighlights = {expectedFrom, expectedTo};
@@ -459,12 +485,28 @@ class _StepbackScreenState extends State<StepbackScreen> {
         });
       } else {
         // Entire puzzle sequence solved!
+        if (_isRatedPuzzle && !_recordedMistakeForCurrentPuzzle) {
+          final delta = await _storageService.recordRatedPuzzleSuccess(
+            puzzleRating: _currentPuzzle!.rating,
+            visualizationDepth: _visualizationDepth,
+          );
+          _lastEloDelta = delta;
+          _userElo = (_userElo + delta).clamp(800, 3000);
+        } else {
+          // Either Unrated mode OR player already made a mistake earlier on this puzzle:
+          // Do NOT add ELO back, only award training XP & solved count!
+          await _storageService.recordPuzzleCompletionWithoutElo(
+            xpEarned: _isRatedPuzzle ? 8 : 10,
+            countAttempt: !_recordedMistakeForCurrentPuzzle,
+          );
+        }
+
+        if (!mounted) return;
         setState(() {
           _greenHighlights = {expectedFrom, expectedTo};
           _gameState = 'feedback';
         });
 
-        _storageService.recordActivity(true);
         _audioService.playSuccess();
         _buildHistoryReplay();
 
@@ -483,7 +525,21 @@ class _StepbackScreenState extends State<StepbackScreen> {
       _audioService.playError();
       if (!_recordedMistakeForCurrentPuzzle) {
         _recordedMistakeForCurrentPuzzle = true;
-        _storageService.recordActivity(false, updatePuzzleStats: false);
+        if (_isRatedPuzzle) {
+          _storageService
+              .recordRatedPuzzleMistake(
+            puzzleRating: _currentPuzzle!.rating,
+            visualizationDepth: _visualizationDepth,
+          )
+              .then((delta) {
+            if (mounted) {
+              setState(() {
+                _lastEloDelta = delta;
+                _userElo = (_userElo + delta).clamp(800, 3000);
+              });
+            }
+          });
+        }
       }
       setState(() {
         _errorSquares = {from, to};
@@ -505,13 +561,74 @@ class _StepbackScreenState extends State<StepbackScreen> {
     }
   }
 
+  Future<void> _revealSolution() async {
+    if (_gameState != 'solving' || _currentPuzzle == null) return;
+
+    if (!_recordedMistakeForCurrentPuzzle) {
+      _recordedMistakeForCurrentPuzzle = true;
+      if (_isRatedPuzzle) {
+        final delta = await _storageService.recordRatedPuzzleMistake(
+          puzzleRating: _currentPuzzle!.rating,
+          visualizationDepth: _visualizationDepth,
+        );
+        if (mounted) {
+          _lastEloDelta = delta;
+          _userElo = (_userElo + delta).clamp(800, 3000);
+        }
+      }
+      await _storageService.consumeEnergy();
+    }
+
+    // Play out the full solution on _activeGame so the user sees the final position
+    // and can step through all moves in the Replay Bar.
+    final fenGame = chess_lib.Chess.fromFEN(_currentPuzzle!.fen);
+    for (final m in _solutionMoves) {
+      _makeMove(fenGame, m);
+    }
+    _activeGame = fenGame;
+    _boardPosition = _getChessboardMap(_activeGame);
+
+    Set<String> highlight = {};
+    if (_solutionMoves.length > 1 && _solutionMoves[1].length >= 4) {
+      highlight = {
+        _solutionMoves[1].substring(0, 2),
+        _solutionMoves[1].substring(2, 4),
+      };
+    }
+
+    _buildHistoryReplay();
+    // Point the replay bar at the first player solution move so they immediately see the answer!
+    final int firstPlayerMoveHistoryIdx =
+        (_setupReplaySteps.length + 1).clamp(0, _historyStates.length - 1);
+
+    if (!mounted) return;
+    setState(() {
+      _selectedSquares.clear();
+      _errorSquares.clear();
+      _greenHighlights = highlight;
+      _solutionWasRevealed = true;
+      _gameState = 'feedback';
+      _historyIndex = firstPlayerMoveHistoryIdx;
+    });
+
+    Future.delayed(const Duration(milliseconds: 200), () {
+      if (mounted && _scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 400),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
   void _buildHistoryReplay() {
     _historyStates.clear();
     if (_currentPuzzle == null) return;
 
     _historyStates.add({
       'position': Map<String, String>.from(_stepbackStartPosition),
-      'label': 'Stepback Start',
+      'label': _visualizationDepth >= 100 ? 'Game Start (Move 1)' : 'Stepback Start',
     });
 
     for (final step in _setupReplaySteps) {
@@ -539,8 +656,199 @@ class _StepbackScreenState extends State<StepbackScreen> {
     _historyIndex = _historyStates.length - 1;
   }
 
+  Widget _buildMovesCalculationCard() {
+    final bool isDeepMode = _movesTable.length >= 6;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF334155)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.psychology, color: Color(0xFF38BDF8), size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    _visualizationDepth >= 100
+                        ? 'Full Game Moves (${_movesTable.length} ply):'
+                        : 'Moves to Calculate in Head:',
+                    style: const TextStyle(
+                      color: Color(0xFF38BDF8),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
+                  ),
+                ],
+              ),
+              if (_currentPuzzle != null)
+                Text(
+                  'Puzzle ${_currentPuzzle!.rating}',
+                  style: const TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (_movesTable.isEmpty)
+            const Text(
+              'Calculate the moves in your head and solve on the board!',
+              style: TextStyle(color: Colors.grey),
+            )
+          else if (isDeepMode) ...[
+            // Mental Step Pacer for 6+ moves or Full Game!
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F172A),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.5)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.chevron_left, color: Colors.white),
+                    onPressed: _mentalPacerIndex > 0
+                        ? () => setState(() => _mentalPacerIndex--)
+                        : null,
+                  ),
+                  Expanded(
+                    child: Column(
+                      children: [
+                        Text(
+                          'Mental Focus: Step ${_mentalPacerIndex + 1} of ${_movesTable.length}',
+                          style: const TextStyle(color: Colors.grey, fontSize: 11),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${_movesTable[_mentalPacerIndex]['chessNotation']}  (${_movesTable[_mentalPacerIndex]['side']})',
+                          style: const TextStyle(
+                            color: Color(0xFF38BDF8),
+                            fontWeight: FontWeight.w800,
+                            fontSize: 17,
+                          ),
+                        ),
+                        Text(
+                          _movesTable[_mentalPacerIndex]['label'] ?? '',
+                          style: TextStyle(
+                            color: _mentalPacerIndex == _movesTable.length - 1
+                                ? const Color(0xFFF59E0B)
+                                : Colors.white60,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.chevron_right, color: Colors.white),
+                    onPressed: _mentalPacerIndex < _movesTable.length - 1
+                        ? () => setState(() => _mentalPacerIndex++)
+                        : null,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            // Compact PGN Notation Chips (tap any move to jump pacer to it)
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: List.generate(_movesTable.length, (idx) {
+                final row = _movesTable[idx];
+                final isFocused = idx == _mentalPacerIndex;
+                final isBlunder = idx == _movesTable.length - 1;
+                return InkWell(
+                  onTap: () => setState(() => _mentalPacerIndex = idx),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isFocused
+                          ? const Color(0xFF38BDF8).withValues(alpha: 0.25)
+                          : (isBlunder
+                              ? const Color(0xFFF59E0B).withValues(alpha: 0.2)
+                              : const Color(0xFF0F172A)),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: isFocused
+                            ? const Color(0xFF38BDF8)
+                            : (isBlunder
+                                ? const Color(0xFFF59E0B).withValues(alpha: 0.6)
+                                : const Color(0xFF334155)),
+                      ),
+                    ),
+                    child: Text(
+                      row['chessNotation'] ?? row['move'] ?? '',
+                      style: TextStyle(
+                        color: isFocused
+                            ? Colors.white
+                            : (isBlunder ? const Color(0xFFF59E0B) : Colors.white70),
+                        fontWeight: isFocused || isBlunder ? FontWeight.bold : FontWeight.normal,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            ),
+          ] else
+            ..._movesTable.map(
+              (row) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4.0),
+                child: Row(
+                  children: [
+                    Text(
+                      '${row['moveNo']}.',
+                      style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(width: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF6366F1).withValues(alpha: 0.25),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.5)),
+                      ),
+                      child: Text(
+                        row['move'] ?? '',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        '${row['label']}',
+                        style: const TextStyle(color: Colors.grey, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final recommendedTier = PuzzleService.getRecommendedTierForElo(_userElo);
+    final recommendedLabel = PuzzleService.getTierDisplayName(recommendedTier);
+
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
@@ -601,170 +909,322 @@ class _StepbackScreenState extends State<StepbackScreen> {
               ),
             )
           : null,
-      body: SingleChildScrollView(
-        controller: _scrollController,
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            // Settings bar: Visualization Depth selector
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E293B),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFF334155)),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('Visualization Depth:', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                  DropdownButton<int>(
-                    value: _visualizationDepth,
-                    dropdownColor: const Color(0xFF1E293B),
-                    underline: const SizedBox(),
-                    items: const [
-                      DropdownMenuItem(value: 1, child: Text('1 Move in Head', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold))),
-                      DropdownMenuItem(value: 2, child: Text('2 Moves in Head', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold))),
-                      DropdownMenuItem(value: 3, child: Text('3 Moves in Head', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold))),
-                      DropdownMenuItem(value: 4, child: Text('4 Moves in Head', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold))),
-                      DropdownMenuItem(value: 5, child: Text('5 Moves in Head', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold))),
-                    ],
-                    onChanged: (val) {
-                      if (val != null && val != _visualizationDepth) {
-                        setState(() {
-                          _visualizationDepth = val;
-                        });
-                        _loadNewPuzzle(); // Loads puzzle for new depth without consuming energy
-                      }
-                    },
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            // Chessboard
-            ChessboardWidget(
-              position: _gameState == 'feedback' && _historyStates.isNotEmpty
-                  ? _historyStates[_historyIndex]['position'] as Map<String, String>
-                  : _boardPosition,
-              orientation: _playerColor,
-              selectedSquares: _selectedSquares,
-              greenHighlights: _greenHighlights,
-              errorSquares: _errorSquares,
-              pieceMarkers: (_visualAid && _stepIndex == 1 && _gameState == 'solving')
-                  ? _pieceMarkers
-                  : const {},
-              onSquareTap: _handleSquareTap,
-            ),
-
-            const SizedBox(height: 16),
-
-            // Permanent Moves Table (Always Visible)
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E293B),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFF334155)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Row(
-                    children: [
-                      Icon(Icons.psychology, color: Color(0xFF38BDF8), size: 20),
-                      SizedBox(width: 8),
-                      Text(
-                        'Moves to Calculate in Your Head:',
-                        style: TextStyle(
-                          color: Color(0xFF38BDF8),
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  if (_movesTable.isEmpty)
-                    const Text('Calculate the moves in your head and solve on the board!', style: TextStyle(color: Colors.grey))
-                  else
-                    ..._movesTable.map((row) => Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4.0),
-                          child: Row(
-                            children: [
-                              Text(
-                                '${row['moveNo']}.',
-                                style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold),
-                              ),
-                              const SizedBox(width: 12),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF6366F1).withValues(alpha: 0.25),
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(color: const Color(0xFF6366F1).withValues(alpha: 0.5)),
-                                ),
-                                child: Text(
-                                  row['move'] ?? '',
-                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                                ),
-                               ),
-                              const SizedBox(width: 12),
-                              Text(
-                                '${row['label']}',
-                                style: const TextStyle(color: Colors.grey, fontSize: 12),
-                              ),
-                            ],
-                          ),
-                        )),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            if (_gameState == 'solving' || _gameState == 'opponent_moving') ...[
+      body: SafeArea(
+        top: false,
+        bottom: true,
+        child: SingleChildScrollView(
+          controller: _scrollController,
+          padding: const EdgeInsets.fromLTRB(16.0, 10.0, 16.0, 28.0),
+          child: Column(
+            children: [
+              // Settings Card: Visualization Depth & Difficulty Tier (Single Compact Card)
               Container(
-                padding: const EdgeInsets.all(14),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
                   color: const Color(0xFF1E293B),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF6366F1)),
+                  border: Border.all(
+                    color: _isRatedPuzzle ? const Color(0xFF334155) : const Color(0xFFF59E0B),
+                  ),
                 ),
-                child: Row(
+                child: Column(
                   children: [
-                    const Icon(Icons.touch_app, color: Color(0xFFF59E0B)),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        _stepIndex == 1
-                            ? 'Your turn! Find and play the winning move on the board for $_playerColor!'
-                            : 'Great first move! Now find the follow-up winning move for $_playerColor!',
-                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                    Row(
+                      children: [
+                        // Depth Selector
+                        Expanded(
+                          child: Row(
+                            children: [
+                              const Text(
+                                'Depth: ',
+                                style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600, fontSize: 12),
+                              ),
+                              Expanded(
+                                child: DropdownButton<int>(
+                                  value: _visualizationDepth,
+                                  dropdownColor: const Color(0xFF1E293B),
+                                  underline: const SizedBox(),
+                                  isDense: true,
+                                  isExpanded: true,
+                                  items: const [
+                                    DropdownMenuItem(
+                                      value: 1,
+                                      child: Text('1 Move', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 12)),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 2,
+                                      child: Text('2 Moves', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 12)),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 3,
+                                      child: Text('3 Moves', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 12)),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 4,
+                                      child: Text('4 Moves', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 12)),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 5,
+                                      child: Text('5 Moves', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 12)),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 7,
+                                      child: Text('7 Moves 🔥', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 12)),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 10,
+                                      child: Text('10 Moves 🔥', style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 12)),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 999,
+                                      child: Text('Full Game 🧠', style: TextStyle(color: Color(0xFFF59E0B), fontWeight: FontWeight.bold, fontSize: 12)),
+                                    ),
+                                  ],
+                                  onChanged: (val) {
+                                    if (val != null && val != _visualizationDepth) {
+                                      setState(() {
+                                        _visualizationDepth = val;
+                                      });
+                                      _loadNewPuzzle();
+                                    }
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Container(
+                          height: 20,
+                          width: 1,
+                          margin: const EdgeInsets.symmetric(horizontal: 8),
+                          color: const Color(0xFF334155),
+                        ),
+                        // Difficulty Selector
+                        Expanded(
+                          child: Row(
+                            children: [
+                              const Text(
+                                'Level: ',
+                                style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w600, fontSize: 12),
+                              ),
+                              Expanded(
+                                child: DropdownButton<String>(
+                                  value: _selectedDifficulty,
+                                  dropdownColor: const Color(0xFF1E293B),
+                                  underline: const SizedBox(),
+                                  isDense: true,
+                                  isExpanded: true,
+                                  items: [
+                                    DropdownMenuItem(
+                                      value: 'auto',
+                                      child: Text(
+                                        'Auto (${recommendedTier.toUpperCase()})',
+                                        style: const TextStyle(color: Color(0xFF10B981), fontWeight: FontWeight.bold, fontSize: 12),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'easy',
+                                      child: Text(
+                                        'Easy (<1350)${recommendedTier == 'easy' ? ' ★' : ''}',
+                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'medium',
+                                      child: Text(
+                                        'Medium${recommendedTier == 'medium' ? ' ★' : ''}',
+                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'hard',
+                                      child: Text(
+                                        'Hard${recommendedTier == 'hard' ? ' ★' : ''}',
+                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'master',
+                                      child: Text(
+                                        'Master (1750+)${recommendedTier == 'master' ? ' ★' : ''}',
+                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                  onChanged: (val) {
+                                    if (val != null && val != _selectedDifficulty) {
+                                      setState(() {
+                                        _selectedDifficulty = val;
+                                      });
+                                      _loadNewPuzzle();
+                                    }
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    // Compact Status Bar: Rated vs Unrated + Advice
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: _isRatedPuzzle
+                            ? const Color(0xFF6366F1).withValues(alpha: 0.15)
+                            : const Color(0xFFF59E0B).withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _isRatedPuzzle ? Icons.verified_outlined : Icons.info_outline,
+                            size: 13,
+                            color: _isRatedPuzzle ? const Color(0xFF818CF8) : const Color(0xFFF59E0B),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              _isRatedPuzzle
+                                  ? (_recordedMistakeForCurrentPuzzle && _lastEloDelta != null
+                                      ? 'Mistake ($_lastEloDelta ELO) • Finish for XP!'
+                                      : 'RATED (ELO $_userElo) • Advice: ${recommendedTier.toUpperCase()}')
+                                  : 'UNRATED (Below $recommendedLabel) • No ELO change',
+                              style: TextStyle(
+                                color: _isRatedPuzzle ? const Color(0xFF818CF8) : const Color(0xFFF59E0B),
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
               ),
-            ],
+
+              const SizedBox(height: 10),
+
+              // Chessboard
+              ChessboardWidget(
+                position: _gameState == 'feedback' && _historyStates.isNotEmpty
+                    ? _historyStates[_historyIndex]['position'] as Map<String, String>
+                    : _boardPosition,
+                orientation: _playerColor,
+                selectedSquares: _selectedSquares,
+                greenHighlights: _greenHighlights,
+                errorSquares: _errorSquares,
+                pieceMarkers: (_visualAid && _stepIndex == 1 && _gameState == 'solving')
+                    ? _pieceMarkers
+                    : const {},
+                onSquareTap: _handleSquareTap,
+              ),
+
+              const SizedBox(height: 10),
+
+              // Permanent Moves Table / Pacer
+              _buildMovesCalculationCard(),
+
+              const SizedBox(height: 10),
+
+              if (_gameState == 'solving' || _gameState == 'opponent_moving') ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E293B),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFF6366F1)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.touch_app, color: Color(0xFFF59E0B), size: 20),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          _selectedSquares.isNotEmpty
+                              ? 'From ${_selectedSquares.first.toUpperCase()} → Tap destination square (${_playerColor.toUpperCase()})!'
+                              : (_stepIndex == 1
+                                  ? 'Your turn (${_playerColor.toUpperCase()})! Tap start square in head, then destination.'
+                                  : 'Great move! Now play the follow-up move for $_playerColor!'),
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 12),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Color(0xFFF59E0B)),
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        icon: const Icon(Icons.lightbulb_outline, color: Color(0xFFF59E0B), size: 15),
+                        label: const Text(
+                          'Solution',
+                          style: TextStyle(color: Color(0xFFF59E0B), fontWeight: FontWeight.bold, fontSize: 11),
+                        ),
+                        onPressed: _revealSolution,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
 
             if (_gameState == 'feedback') ...[
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF10B981).withValues(alpha: 0.15),
-                  border: Border.all(color: const Color(0xFF10B981)),
+                  color: (_solutionWasRevealed ? const Color(0xFFF59E0B) : const Color(0xFF10B981))
+                      .withValues(alpha: 0.15),
+                  border: Border.all(
+                    color: _solutionWasRevealed ? const Color(0xFFF59E0B) : const Color(0xFF10B981),
+                  ),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Row(
+                child: Row(
                   children: [
-                    Icon(Icons.stars, color: Color(0xFF10B981), size: 28),
-                    SizedBox(width: 12),
-                    Text(
-                      'Well done! Puzzle Solved!',
-                      style: TextStyle(color: Color(0xFF10B981), fontSize: 16, fontWeight: FontWeight.bold),
+                    Icon(
+                      _solutionWasRevealed ? Icons.lightbulb : Icons.stars,
+                      color: _solutionWasRevealed ? const Color(0xFFF59E0B) : const Color(0xFF10B981),
+                      size: 28,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _solutionWasRevealed
+                                ? 'Solution Revealed!'
+                                : 'Well done! Puzzle Solved!',
+                            style: TextStyle(
+                              color: _solutionWasRevealed
+                                  ? const Color(0xFFF59E0B)
+                                  : const Color(0xFF10B981),
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            _solutionWasRevealed
+                                ? 'Use the < and > arrows below to replay the mental moves and winning solution! (${_isRatedPuzzle && _lastEloDelta != null ? '$_lastEloDelta ELO • ' : ''}Rating: $_userElo)'
+                                : (!_isRatedPuzzle
+                                    ? 'Unrated Mode (+10 Monthly XP • ELO unchanged: $_userElo)'
+                                    : (_recordedMistakeForCurrentPuzzle
+                                        ? 'Solved after mistake ($_lastEloDelta ELO • +8 Monthly XP • Rating: $_userElo)'
+                                        : 'Flawless Solve! (+$_lastEloDelta ELO • New Rating: $_userElo)')),
+                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -801,9 +1261,10 @@ class _StepbackScreenState extends State<StepbackScreen> {
                         ),
                         if (_historyStates.isNotEmpty)
                           Text(
-                            '${_historyStates[_historyIndex]['label']}',
-                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                            _historyStates[_historyIndex]['label'] as String,
+                            style: const TextStyle(color: Colors.grey, fontSize: 12),
                             textAlign: TextAlign.center,
+                            overflow: TextOverflow.ellipsis,
                           ),
                       ],
                     ),
@@ -828,14 +1289,11 @@ class _StepbackScreenState extends State<StepbackScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
             ],
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 }
-
-
-
