@@ -23,6 +23,21 @@ class Puzzle {
     required this.gameMoves,
   });
 
+  /// Returns the exact number of half-moves (plies) played before [fen],
+  /// derived directly from the FEN's side-to-move and fullmove number.
+  /// Falls back to [ply] if the FEN is malformed.
+  int get pliesBeforeFen {
+    final parts = fen.trim().split(RegExp(r'\s+'));
+    if (parts.length >= 6) {
+      final side = parts[1];
+      final fullMove = int.tryParse(parts[5]);
+      if (fullMove != null && fullMove >= 1) {
+        return (fullMove - 1) * 2 + (side == 'b' ? 1 : 0);
+      }
+    }
+    return ply;
+  }
+
   factory Puzzle.fromJson(Map<String, dynamic> json) {
     return Puzzle(
       id: json['id'] as String? ?? '',

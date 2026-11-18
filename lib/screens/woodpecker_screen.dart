@@ -6,9 +6,11 @@ import '../models/puzzle.dart';
 import '../services/puzzle_service.dart';
 import '../services/storage_service.dart';
 import '../services/audio_service.dart';
+import '../utils/chess_move_helper.dart';
 import '../widgets/chessboard_widget.dart';
 import '../widgets/energy_dialog.dart';
 import '../widgets/mode_info_dialog.dart';
+import '../widgets/puzzle_share_sheet.dart';
 
 class WoodpeckerScreen extends StatefulWidget {
   const WoodpeckerScreen({super.key});
@@ -58,6 +60,7 @@ class _WoodpeckerScreenState extends State<WoodpeckerScreen> with WidgetsBinding
   String _boardStatus = 'solving'; // 'solving', 'opponent_moving'
 
   Set<String> _selectedSquares = {};
+  Set<String> _legalMoveSquares = {};
   Set<String> _greenHighlights = {};
   Set<String> _errorSquares = {};
 
@@ -340,6 +343,7 @@ class _WoodpeckerScreenState extends State<WoodpeckerScreen> with WidgetsBinding
     setState(() {
       _boardPosition = _getChessboardMap(_activeGame);
       _selectedSquares = {};
+      _legalMoveSquares = {};
       _greenHighlights = initialHighlights;
       _errorSquares = {};
       _boardStatus = 'solving';
@@ -357,8 +361,10 @@ class _WoodpeckerScreenState extends State<WoodpeckerScreen> with WidgetsBinding
 
     if (_selectedSquares.isEmpty) {
       if (_boardPosition[square]?.startsWith(playerPrefix) == true) {
+        final destinations = ChessMoveHelper.getLegalDestinations(_activeGame, square);
         setState(() {
           _selectedSquares = {square};
+          _legalMoveSquares = destinations;
         });
       }
       return;
@@ -370,13 +376,26 @@ class _WoodpeckerScreenState extends State<WoodpeckerScreen> with WidgetsBinding
     if (from == to) {
       setState(() {
         _selectedSquares.clear();
+        _legalMoveSquares.clear();
       });
       return;
     }
 
-    if (_boardPosition[to]?.startsWith(playerPrefix) == true && to != expectedTo) {
+    // Tapping another own piece switches selection and updates legal move dots
+    if (_boardPosition[to]?.startsWith(playerPrefix) == true) {
+      final destinations = ChessMoveHelper.getLegalDestinations(_activeGame, to);
       setState(() {
         _selectedSquares = {to};
+        _legalMoveSquares = destinations;
+      });
+      return;
+    }
+
+    // Only allow strictly legal chess moves in Woodpecker Rush (ignore illegal taps cleanly)
+    if (!_legalMoveSquares.contains(to)) {
+      setState(() {
+        _selectedSquares.clear();
+        _legalMoveSquares.clear();
       });
       return;
     }
@@ -386,41 +405,53 @@ class _WoodpeckerScreenState extends State<WoodpeckerScreen> with WidgetsBinding
     if (currentEnergy <= 0) {
       setState(() {
         _selectedSquares.clear();
+        _legalMoveSquares.clear();
       });
       EnergyDialog.show(context, onRefilled: () {});
       return;
     }
 
     _selectedSquares.clear();
+    _legalMoveSquares.clear();
 
     if (from == expectedFrom && to == expectedTo) {
       _executeCorrectStep(expectedMove, expectedFrom, expectedTo);
     } else {
-      _audioService.playError();
-      setState(() {
-        if (!_mistakeOnCurrentPuzzle) {
-          _mistakeOnCurrentPuzzle = true;
-          if (!_isReviewingMistakes) {
-            _cycleMistakes++;
-            _currentCycleMissedIds.add(_activePuzzle!.id);
+      final altMate = ChessMoveHelper.findCheckmateMove(_activeGame, from, to);
+      if (altMate != null) {
+        _solutionMoves = [..._solutionMoves.sublist(0, _stepIndex), altMate];
+        _executeCorrectStep(
+          altMate,
+          altMate.substring(0, 2),
+          altMate.substring(2, 4),
+        );
+      } else {
+        _audioService.playError();
+        setState(() {
+          if (!_mistakeOnCurrentPuzzle) {
+            _mistakeOnCurrentPuzzle = true;
+            if (!_isReviewingMistakes) {
+              _cycleMistakes++;
+              _currentCycleMissedIds.add(_activePuzzle!.id);
+            }
           }
-        }
-        _errorSquares = {from, to};
-      });
+          _errorSquares = {from, to};
+        });
 
-      _storageService.consumeEnergy().then((hasEnergy) {
-        if (!hasEnergy && mounted) {
-          EnergyDialog.show(context, onRefilled: () {});
-        }
-      });
+        _storageService.consumeEnergy().then((hasEnergy) {
+          if (!hasEnergy && mounted) {
+            EnergyDialog.show(context, onRefilled: () {});
+          }
+        });
 
-      Future.delayed(const Duration(milliseconds: 600), () {
-        if (mounted) {
-          setState(() {
-            _errorSquares.clear();
-          });
-        }
-      });
+        Future.delayed(const Duration(milliseconds: 600), () {
+          if (mounted) {
+            setState(() {
+              _errorSquares.clear();
+            });
+          }
+        });
+      }
     }
   }
 
@@ -520,6 +551,7 @@ class _WoodpeckerScreenState extends State<WoodpeckerScreen> with WidgetsBinding
         }
       }
       _selectedSquares = {expectedFrom};
+      _legalMoveSquares.clear();
     });
     _executeCorrectStep(expectedMove, expectedFrom, expectedTo);
   }
@@ -564,6 +596,45 @@ class _WoodpeckerScreenState extends State<WoodpeckerScreen> with WidgetsBinding
 
     if (passed) {
       await _storageService.incrementWoodpeckerSetsCompleted();
+    }
+  }
+
+  Future<void> _openShareSheet() async {
+    final puzzle = _activePuzzle;
+    if (puzzle == null) return;
+
+    final bool wasPaused = _isPaused;
+    if (_mode == 'playing' && !_isReviewingMistakes && !wasPaused) {
+      setState(() => _isPaused = true);
+    }
+
+    final tacticalGame = chess_lib.Chess.fromFEN(puzzle.fen);
+    Set<String> blunderHighlights = {};
+    if (puzzle.solution.isNotEmpty) {
+      _makeMove(tacticalGame, puzzle.solution[0]);
+      if (puzzle.solution[0].length >= 4) {
+        blunderHighlights = {
+          puzzle.solution[0].substring(0, 2),
+          puzzle.solution[0].substring(2, 4),
+        };
+      }
+    }
+
+    await PuzzleShareSheet.show(
+      context,
+      PuzzleShareData(
+        puzzleId: puzzle.id,
+        rating: puzzle.rating,
+        modeTitle: 'Woodpecker Rush',
+        playerColor: _playerColor,
+        boardPosition: _getChessboardMap(tacticalGame),
+        greenHighlights: blunderHighlights,
+        fen: tacticalGame.generate_fen(),
+      ),
+    );
+
+    if (mounted && !wasPaused && _mode == 'playing' && !_isReviewingMistakes) {
+      setState(() => _isPaused = false);
     }
   }
 
@@ -1018,13 +1089,22 @@ class _WoodpeckerScreenState extends State<WoodpeckerScreen> with WidgetsBinding
               }
             },
           ),
+          titleSpacing: 4,
           title: const Text(
             'Woodpecker Rush',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 17),
           ),
           actions: [
+            if (_mode == 'playing' && _activePuzzle != null)
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.share_outlined, color: Color(0xFF38BDF8)),
+                tooltip: 'Share / Lichess Analysis',
+                onPressed: _openShareSheet,
+              ),
             if (_mode == 'playing' && !_isReviewingMistakes)
               IconButton(
+                visualDensity: VisualDensity.compact,
                 icon: Icon(
                   _isPaused ? Icons.play_arrow_rounded : Icons.pause_circle_outline,
                   color: const Color(0xFFF59E0B),
@@ -1038,16 +1118,19 @@ class _WoodpeckerScreenState extends State<WoodpeckerScreen> with WidgetsBinding
               ),
             if (_mode != 'playing')
               IconButton(
+                visualDensity: VisualDensity.compact,
                 icon: const Icon(Icons.tune, color: Color(0xFFEC4899)),
                 tooltip: 'Set Settings',
                 onPressed: _showConfigureSetDialog,
               ),
             IconButton(
+              visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.palette_outlined, color: Color(0xFF38BDF8)),
               tooltip: 'Board Theme',
               onPressed: () => ChessboardWidget.showThemePicker(context),
             ),
             IconButton(
+              visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.info_outline, color: Color(0xFF38BDF8)),
               tooltip: 'How to Play',
               onPressed: () => ModeInfoDialog.showWoodpeckerInfo(context),
@@ -1337,6 +1420,7 @@ class _WoodpeckerScreenState extends State<WoodpeckerScreen> with WidgetsBinding
                       position: _boardPosition,
                       orientation: _playerColor,
                       selectedSquares: _selectedSquares,
+                      legalMoveSquares: _legalMoveSquares,
                       greenHighlights: _greenHighlights,
                       errorSquares: _errorSquares,
                       onSquareTap: _handleSquareTap,

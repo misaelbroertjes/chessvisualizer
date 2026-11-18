@@ -146,10 +146,13 @@ class PuzzleService {
       if (p.rating < minRating || p.rating > maxRating) return false;
       if (forcingOnly && p.forcingScore < 2) return false;
       if (minPreMoves > 0) {
-        final available = p.gameMoves.isNotEmpty ? (p.ply - 1) : p.preMoves.length;
+        final pliesBefore = p.pliesBeforeFen;
+        final available = p.gameMoves.isNotEmpty
+            ? min(pliesBefore, p.gameMoves.length)
+            : p.preMoves.length;
         if (available < minPreMoves) return false;
       }
-      if (maxPly != null && p.ply > maxPly) return false;
+      if (maxPly != null && p.pliesBeforeFen > maxPly) return false;
       return true;
     }).toList();
   }

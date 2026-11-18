@@ -5,9 +5,11 @@ import '../models/puzzle.dart';
 import '../services/puzzle_service.dart';
 import '../services/storage_service.dart';
 import '../services/audio_service.dart';
+import '../utils/chess_move_helper.dart';
 import '../widgets/chessboard_widget.dart';
 import '../widgets/energy_dialog.dart';
 import '../widgets/mode_info_dialog.dart';
+import '../widgets/puzzle_share_sheet.dart';
 
 class StepbackScreen extends StatefulWidget {
   const StepbackScreen({super.key});
@@ -41,6 +43,7 @@ class _StepbackScreenState extends State<StepbackScreen> {
   final List<Map<String, String>> _movesTable = [];
   final List<Map<String, dynamic>> _setupReplaySteps = [];
   String? _originSquareOfFirstMove;
+  Map<String, String> _originOfMentalSquare = {};
   bool _recordedMistakeForCurrentPuzzle = false;
   bool _solutionWasRevealed = false;
 
@@ -103,6 +106,7 @@ class _StepbackScreenState extends State<StepbackScreen> {
       _historyIndex = 0;
       _mentalPacerIndex = 0;
       _originSquareOfFirstMove = null;
+      _originOfMentalSquare = {};
       _recordedMistakeForCurrentPuzzle = false;
       _solutionWasRevealed = false;
     });
@@ -247,7 +251,7 @@ class _StepbackScreenState extends State<StepbackScreen> {
     _pieceMarkers.clear();
     _setupReplaySteps.clear();
 
-    final int totalPly = puzzle.ply;
+    final int totalPly = puzzle.pliesBeforeFen;
     final List<String> gameMoves = puzzle.gameMoves;
 
     final bool isFullGame = _visualizationDepth >= 100;
@@ -334,6 +338,8 @@ class _StepbackScreenState extends State<StepbackScreen> {
       });
     }
 
+    _originOfMentalSquare = Map<String, String>.from(originOfSquare);
+
     if (_solutionMoves.length > 1 && _solutionMoves[1].length >= 4) {
       final expectedFrom = _solutionMoves[1].substring(0, 2);
       _originSquareOfFirstMove = originOfSquare[expectedFrom] ?? expectedFrom;
@@ -415,20 +421,48 @@ class _StepbackScreenState extends State<StepbackScreen> {
 
     _selectedSquares.clear();
 
-    final bool isCorrect = to == expectedTo &&
+    final bool matchesExpected = to == expectedTo &&
         (from == expectedFrom ||
             (_stepIndex == 1 &&
                 _originSquareOfFirstMove != null &&
                 from == _originSquareOfFirstMove));
 
-    if (isCorrect) {
+    String? acceptedMove;
+    if (matchesExpected) {
+      acceptedMove = expectedMove;
+    } else {
+      // Accept any legal move that delivers immediate checkmate (e.g. multiple mate-in-1s)
+      if (_stepIndex == 1) {
+        final probeGame = chess_lib.Chess.fromFEN(_currentPuzzle!.fen);
+        if (_solutionMoves.isNotEmpty) {
+          _makeMove(probeGame, _solutionMoves[0]);
+        }
+        acceptedMove = ChessMoveHelper.findCheckmateMoveWithOrigins(
+          probeGame,
+          from,
+          to,
+          _originOfMentalSquare,
+        );
+      } else {
+        acceptedMove = ChessMoveHelper.findCheckmateMove(_activeGame, from, to);
+      }
+
+      if (acceptedMove != null) {
+        _solutionMoves = [..._solutionMoves.sublist(0, _stepIndex), acceptedMove];
+      }
+    }
+
+    if (acceptedMove != null) {
+      final playedFrom = acceptedMove.length >= 4 ? acceptedMove.substring(0, 2) : from;
+      final playedTo = acceptedMove.length >= 4 ? acceptedMove.substring(2, 4) : to;
+
       if (_stepIndex == 1) {
         final fenGame = chess_lib.Chess.fromFEN(_currentPuzzle!.fen);
         if (_solutionMoves.isNotEmpty) {
           _makeMove(fenGame, _solutionMoves[0]);
         }
-        final wasCapture = fenGame.get(expectedTo) != null;
-        _makeMove(fenGame, expectedMove);
+        final wasCapture = fenGame.get(playedTo) != null;
+        _makeMove(fenGame, acceptedMove);
         _activeGame = fenGame;
         _boardPosition = _getChessboardMap(_activeGame);
 
@@ -440,8 +474,8 @@ class _StepbackScreenState extends State<StepbackScreen> {
           _audioService.playMove();
         }
       } else {
-        final wasCapture = _activeGame.get(expectedTo) != null;
-        _makeMove(_activeGame, expectedMove);
+        final wasCapture = _activeGame.get(playedTo) != null;
+        _makeMove(_activeGame, acceptedMove);
         _boardPosition = _getChessboardMap(_activeGame);
 
         if (_activeGame.in_check) {
@@ -455,7 +489,7 @@ class _StepbackScreenState extends State<StepbackScreen> {
 
       if (_stepIndex + 2 < _solutionMoves.length) {
         setState(() {
-          _greenHighlights = {expectedFrom, expectedTo};
+          _greenHighlights = {playedFrom, playedTo};
           _gameState = 'opponent_moving';
         });
 
@@ -503,7 +537,7 @@ class _StepbackScreenState extends State<StepbackScreen> {
 
         if (!mounted) return;
         setState(() {
-          _greenHighlights = {expectedFrom, expectedTo};
+          _greenHighlights = {playedFrom, playedTo};
           _gameState = 'feedback';
         });
 
@@ -844,6 +878,35 @@ class _StepbackScreenState extends State<StepbackScreen> {
     );
   }
 
+  void _openShareSheet() {
+    final puzzle = _currentPuzzle;
+    if (puzzle == null) return;
+
+    final tacticalGame = chess_lib.Chess.fromFEN(puzzle.fen);
+    if (puzzle.solution.isNotEmpty) {
+      _makeMove(tacticalGame, puzzle.solution[0]);
+    }
+    final tacticalFen = tacticalGame.generate_fen();
+
+    final depthLabel = _visualizationDepth >= 100
+        ? 'Full Game'
+        : (_visualizationDepth == 1 ? '1 Move' : '$_visualizationDepth Moves');
+
+    PuzzleShareSheet.show(
+      context,
+      PuzzleShareData(
+        puzzleId: puzzle.id,
+        rating: puzzle.rating,
+        modeTitle: 'Puzzle Stepback',
+        depthLabel: depthLabel,
+        playerColor: _playerColor,
+        boardPosition: Map<String, String>.from(_stepbackStartPosition),
+        fen: tacticalFen,
+        movesToCalculate: List<Map<String, String>>.from(_movesTable),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final recommendedTier = PuzzleService.getRecommendedTierForElo(_userElo);
@@ -854,17 +917,27 @@ class _StepbackScreenState extends State<StepbackScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
         elevation: 0,
+        titleSpacing: 4,
         title: const Text(
           'Puzzle Stepback',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 17),
         ),
         actions: [
+          if (_currentPuzzle != null)
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.share_outlined, color: Color(0xFF38BDF8)),
+              tooltip: 'Share / Lichess Analysis',
+              onPressed: _openShareSheet,
+            ),
           IconButton(
+            visualDensity: VisualDensity.compact,
             icon: const Icon(Icons.palette_outlined, color: Color(0xFF38BDF8)),
             tooltip: 'Board Theme',
             onPressed: () => ChessboardWidget.showThemePicker(context),
           ),
           IconButton(
+            visualDensity: VisualDensity.compact,
             icon: const Icon(Icons.info_outline, color: Color(0xFF38BDF8)),
             tooltip: 'How to Play',
             onPressed: () => ModeInfoDialog.showStepbackInfo(context),
@@ -872,6 +945,7 @@ class _StepbackScreenState extends State<StepbackScreen> {
           Tooltip(
             message: 'Toggle Visual Aid Ghost Dots',
             child: IconButton(
+              visualDensity: VisualDensity.compact,
               icon: Icon(
                 _visualAid ? Icons.visibility : Icons.visibility_off,
                 color: _visualAid ? const Color(0xFF38BDF8) : Colors.grey,
@@ -1229,7 +1303,24 @@ class _StepbackScreenState extends State<StepbackScreen> {
                   ],
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 10),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Color(0xFF38BDF8)),
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  icon: const Icon(Icons.share_outlined, color: Color(0xFF38BDF8), size: 18),
+                  label: const Text(
+                    'Share Puzzle / Open in Lichess Analysis',
+                    style: TextStyle(color: Color(0xFF38BDF8), fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                  onPressed: _openShareSheet,
+                ),
+              ),
+              const SizedBox(height: 12),
               // Replay Bar
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,

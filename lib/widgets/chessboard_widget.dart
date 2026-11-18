@@ -80,6 +80,7 @@ class ChessboardWidget extends StatelessWidget {
   final Set<String> greenHighlights;
   final Set<String> errorSquares;
   final Set<String> pieceMarkers; // Visualization dots
+  final Set<String> legalMoveSquares; // Legal move dots/rings (e.g. Woodpecker)
   final Function(String square)? onSquareTap;
 
   const ChessboardWidget({
@@ -94,6 +95,7 @@ class ChessboardWidget extends StatelessWidget {
     this.greenHighlights = const {},
     this.errorSquares = const {},
     this.pieceMarkers = const {},
+    this.legalMoveSquares = const {},
     this.onSquareTap,
   });
 
@@ -278,6 +280,7 @@ class ChessboardWidget extends StatelessWidget {
 
                 final piece = position[square];
                 final hasMarker = pieceMarkers.contains(square);
+                final isLegalDestination = legalMoveSquares.contains(square);
 
                 return GestureDetector(
                   onTap: () {
@@ -345,6 +348,35 @@ class ChessboardWidget extends StatelessWidget {
                                   ),
                                 );
                               },
+                            ),
+                          ),
+
+                        // Legal move indicator: subtle dot on empty square
+                        if (isLegalDestination && (!piecesVisible || piece == null))
+                          FractionallySizedBox(
+                            widthFactor: 0.30,
+                            heightFactor: 0.30,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.28),
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ),
+
+                        // Legal capture indicator: subtle ring around target piece
+                        if (isLegalDestination && piecesVisible && piece != null)
+                          FractionallySizedBox(
+                            widthFactor: 0.88,
+                            heightFactor: 0.88,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: Colors.black.withValues(alpha: 0.28),
+                                  width: 3.5,
+                                ),
+                              ),
                             ),
                           ),
 
